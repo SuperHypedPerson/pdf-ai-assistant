@@ -1,19 +1,27 @@
 #!/usr/bin/env python3
 """
-notes.py --file book.pdf [--subject SUBJECT]
+notes.py --file book.pdf --subject SUBJECT
 
-Stage 1-2: parses the PDF's structure, shows it to you, and lets you pick
-which chapters/subchapters to process. Note generation itself (Stage 3)
-is not implemented yet — this stub confirms the selection and stops.
+Parses the PDF's structure, shows it to you, lets you pick which
+chapters/subchapters to process, and generates one Obsidian note per
+selected subchapter via a local LM Studio model.
 """
 
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
+
+import openai
 
 from src import manifest as manifest_mod
+from src import llm_client
+from src.note_generator import generate_subchapter_note
 from src.selection import confirm_text, parse_selection, render_tree
 from src.structure_extractor import extract_structure
+
+OUTPUT_DIR = Path("notes_output")
 
 
 def prompt_for_selection(structure) -> list:
@@ -46,7 +54,14 @@ def main():
                          help="Process every chapter without prompting (Stage 6 — not implemented yet)")
     parser.add_argument("--manifest", default=str(manifest_mod.DEFAULT_MANIFEST_PATH),
                          help="Path to the manifest JSON file")
+    parser.add_argument("--lmstudio-url", default=None,
+                         help=f"LM Studio base URL (default: {llm_client.DEFAULT_BASE_URL})")
+    parser.add_argument("--model", default=None,
+                         help=f"Model name as loaded in LM Studio (default: {llm_client.DEFAULT_MODEL})")
     args = parser.parse_args()
+
+    if not args.all_chapters and not args.subject:
+        parser.error("--subject is required (e.g. --subject finance)")
 
     structure = extract_structure(args.file)
 
@@ -61,9 +76,35 @@ def main():
         return
 
     selected = prompt_for_selection(structure)
-    manifest_mod.save_manifest(manifest, args.manifest)
 
-    print(f"\n{len(selected)} subchapter(s) confirmed. Note generation is Stage 3 — not implemented yet.")
+    client = llm_client.get_client(args.lmstudio_url)
+    model = args.model or llm_client.get_model_name()
+
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    print(f"\nGenerating notes via LM Studio ({model})...\n")
+
+    generated = 0
+    for chapter, subchapter in selected:
+        print(f"  {subchapter.number} {subchapter.title} ...", end=" ", flush=True)
+        try:
+            note_md = generate_subchapter_note(
+                args.file, structure, chapter, subchapter, args.subject, client, model,
+            )
+        except openai.APIConnectionError:
+            print("FAILED")
+            print(f"\nCouldn't reach LM Studio at {args.lmstudio_url or llm_client.DEFAULT_BASE_URL}.")
+            print("Make sure the LM Studio local server is running and the model is loaded, then re-run.")
+            sys.exit(1)
+
+        safe_title = "".join(c for c in subchapter.title if c.isalnum() or c in " -_").strip()
+        out_path = OUTPUT_DIR / f"{subchapter.number} {safe_title}.md"
+        out_path.write_text(note_md)
+        manifest_mod.mark_processed(manifest, args.file, subchapter.number, str(out_path))
+        generated += 1
+        print(f"-> {out_path}")
+
+    manifest_mod.save_manifest(manifest, args.manifest)
+    print(f"\n{generated} note(s) written to {OUTPUT_DIR}/")
 
 
 if __name__ == "__main__":
