@@ -23,7 +23,7 @@ from src import llm_client
 from src import manifest as manifest_mod
 from src import run_log
 from src import vault
-from src.note_generator import generate_subchapter_note, real_chapter_number
+from src.note_generator import chapter_title_rest, generate_subchapter_note, real_chapter_number
 from src.selection import confirm_text, parse_selection, render_tree
 from src.structure_extractor import extract_structure
 
@@ -129,7 +129,8 @@ def main():
 
     start_time = time.monotonic()
 
-    def finish(status: str, generated: int, requested: int, skipped: int = 0, error: str | None = None):
+    def finish(status: str, generated: int, requested: int, skipped: int = 0,
+               failed: list | None = None, error: str | None = None):
         entry = run_log.log_run({
             "script": "notes",
             "status": status,
@@ -139,6 +140,8 @@ def main():
             "num_requested": requested,
             "num_generated": generated,
             "num_skipped_already_processed": skipped,
+            "num_failed": len(failed) if failed else 0,
+            "failed_subchapters": failed or [],
             "model": model,
             "vault": str(vault_root),
             "duration_seconds": round(time.monotonic() - start_time, 1),
@@ -162,17 +165,31 @@ def main():
 
     client = llm_client.get_client(args.lmstudio_url, timeout=args.timeout)
 
-    known = build_known_notes(manifest, args.file, vault_root, structure, selected)
+    # Start from only what's already on record — a subchapter joins known/
+    # by_chapter (and so becomes visible as a sibling / index entry) only
+    # once its note is actually written, so a failed subchapter never ends
+    # up linked from the index or another note's Related section.
+    known = build_known_notes(manifest, args.file, vault_root, structure, [])
     by_chapter = group_by_chapter(known)
 
-    print(f"\nGenerating notes via LM Studio ({model})...\n")
+    print(f"\nGenerating notes via LM Studio ({model})...")
 
     generated = 0
+    failed: list[str] = []
+    connection_lost = False
+    current_chapter_num = None
+
     for chapter, subchapter in selected:
+        chap_num = real_chapter_number(chapter)
+        if chap_num != current_chapter_num:
+            current_chapter_num = chap_num
+            print(f"\n=== Chapter {chap_num} - {chapter_title_rest(chapter)} ===")
+
         print(f"  {subchapter.number} {subchapter.title} ...", end=" ", flush=True)
 
-        siblings = by_chapter[real_chapter_number(chapter)]
+        siblings = by_chapter[chap_num]
         related_links = [vault.wikilink(vault_root, path) for sib, path in siblings if sib.number != subchapter.number]
+        resolved_path = resolve_note_path(manifest, args.file, vault_root, structure.title, chapter, subchapter)
 
         try:
             note_md = generate_subchapter_note(
@@ -180,37 +197,30 @@ def main():
                 max_tokens=args.max_tokens, related_links=related_links,
             )
         except llm_client.EmptyResponseError as e:
-            print("FAILED (empty response)")
-            print(f"\n{e}")
-            manifest_mod.save_manifest(manifest, args.manifest)
-            finish("failed", generated, len(selected), skipped=skipped, error=str(e))
-            sys.exit(1)
+            print("FAILED (empty response) — skipping, will retry on next run")
+            failed.append(subchapter.number)
+            continue
         except openai.APITimeoutError:
-            msg = f"LM Studio didn't respond within {args.timeout:.0f}s."
-            print("FAILED (timed out)")
-            print(f"\n{msg}")
-            print("Check the LM Studio server window/log for this request — if it's still "
-                  "generating, your hardware may just be slow for this model; re-run with "
-                  "--timeout 600 (or higher). If the log shows it finished or errored, that's "
-                  "a different problem — paste the log here.")
-            manifest_mod.save_manifest(manifest, args.manifest)
-            finish("timed_out", generated, len(selected), skipped=skipped, error=msg)
-            sys.exit(1)
+            print("FAILED (timed out) — skipping, will retry on next run")
+            failed.append(subchapter.number)
+            continue
         except openai.APIConnectionError:
             msg = f"Couldn't reach LM Studio at {args.lmstudio_url or llm_client.DEFAULT_BASE_URL}."
             print("FAILED")
             print(f"\n{msg}")
-            print("Make sure the LM Studio local server is running and the model is loaded, then re-run.")
-            manifest_mod.save_manifest(manifest, args.manifest)
-            finish("connection_failed", generated, len(selected), skipped=skipped, error=msg)
-            sys.exit(1)
+            print("Make sure the LM Studio local server is running and the model is loaded. "
+                  "Stopping here — re-running will pick up where this left off (already-processed "
+                  "subchapters are skipped automatically).")
+            connection_lost = True
+            break
 
-        out_path = known[subchapter.number][2]
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(note_md, encoding="utf-8")
-        manifest_mod.mark_processed(manifest, args.file, subchapter.number, str(out_path))
+        resolved_path.parent.mkdir(parents=True, exist_ok=True)
+        resolved_path.write_text(note_md, encoding="utf-8")
+        manifest_mod.mark_processed(manifest, args.file, subchapter.number, str(resolved_path))
+        known[subchapter.number] = (chapter, subchapter, resolved_path)
+        by_chapter[chap_num].append((subchapter, resolved_path))
         generated += 1
-        print(f"-> {out_path}")
+        print(f"-> {resolved_path}")
 
     chapter_by_number = {real_chapter_number(c): c for c in structure.chapters}
     index_md = vault.render_index(vault_root, structure.title, structure, chapter_by_number, by_chapter)
@@ -221,7 +231,16 @@ def main():
     manifest_mod.save_manifest(manifest, args.manifest)
     print(f"\n{generated} note(s) written under {vault.book_folder(vault_root, structure.title)}/")
     print(f"Index updated: {index_out}")
-    finish("completed", generated, len(selected), skipped=skipped)
+    if failed:
+        print(f"{len(failed)} subchapter(s) failed and were skipped: {', '.join(failed)}")
+        print("Re-run the same command to retry just those (everything else will be skipped).")
+
+    if connection_lost:
+        finish("connection_failed", generated, len(selected), skipped=skipped, failed=failed,
+               error="LM Studio became unreachable mid-run")
+        sys.exit(1)
+    finish("completed" if not failed else "completed_with_failures",
+           generated, len(selected), skipped=skipped, failed=failed)
 
 
 if __name__ == "__main__":
