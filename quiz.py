@@ -65,6 +65,8 @@ def main():
                          help=f"Model name as loaded in LM Studio (default: {llm_client.DEFAULT_MODEL})")
     parser.add_argument("--timeout", type=float, default=llm_client.DEFAULT_TIMEOUT_SECONDS,
                          help=f"Seconds to wait for LM Studio (default: {llm_client.DEFAULT_TIMEOUT_SECONDS:.0f})")
+    parser.add_argument("--max-tokens", type=int, default=None,
+                         help="Fixed output token budget (default: auto-scaled by --num-questions)")
     args = parser.parse_args()
 
     if args.num_questions < 1:
@@ -89,7 +91,7 @@ def main():
     try:
         quiz_md = generate_quiz(
             args.file, structure, selected, args.subject, args.difficulty,
-            args.num_questions, client, model,
+            args.num_questions, client, model, max_tokens=args.max_tokens,
         )
     except QuizParseError as e:
         print("FAILED (couldn't parse the model's response)")

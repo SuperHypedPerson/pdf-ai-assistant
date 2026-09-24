@@ -18,9 +18,9 @@ from src.llm_client import generate as llm_generate
 from src.note_generator import real_chapter_number, real_subchapter_number
 from src.structure_extractor import BookStructure, Chapter, SubChapter
 
-BASE_MAX_TOKENS = 1024
-TOKENS_PER_QUESTION = 220
-MAX_TOKENS_CAP = 8192
+BASE_MAX_TOKENS = 4096  # generous headroom for a reasoning model's "thinking" pass
+TOKENS_PER_QUESTION = 300
+MAX_TOKENS_CAP = 16384
 
 MCQ_FRACTION = 0.7  # "mostly MCQ" mix
 
@@ -189,12 +189,13 @@ def render_quiz(book_title: str, subject: str, difficulty: str,
 
 def generate_quiz(pdf_path: str | Path, structure: BookStructure,
                    selected: list[tuple[Chapter, SubChapter]], subject: str, difficulty: str,
-                   num_questions: int, client, model: str) -> str:
+                   num_questions: int, client, model: str, max_tokens: int | None = None) -> str:
     num_mcq, num_short = question_mix(num_questions)
     source_text = build_source_text(pdf_path, structure, selected)
     prompt = build_prompt(structure.title, subject, difficulty, num_mcq, num_short, source_text)
 
-    raw, truncated = llm_generate(client, model, SYSTEM_PROMPT, prompt, max_tokens=_max_tokens_for(num_questions))
+    tokens = max_tokens or _max_tokens_for(num_questions)
+    raw, truncated = llm_generate(client, model, SYSTEM_PROMPT, prompt, max_tokens=tokens)
     questions = _parse_questions(raw)
 
     quiz_md = render_quiz(structure.title, subject, difficulty, selected, questions)

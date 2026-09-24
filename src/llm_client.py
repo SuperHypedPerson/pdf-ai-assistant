@@ -51,9 +51,12 @@ def generate(client: OpenAI, model: str, system_prompt: str, user_prompt: str,
     try:
         response = client.chat.completions.create(
             model=model, messages=messages, temperature=temperature, max_tokens=max_tokens,
-            # Qwen3-style reasoning-mode toggle: saves the token budget for
-            # the actual answer on backends that support it.
-            extra_body={"enable_thinking": False},
+            # Two different spots backends look for this Qwen3 toggle —
+            # harmless if a given backend recognizes neither.
+            extra_body={
+                "enable_thinking": False,
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
         )
     except openai.BadRequestError:
         # Backend rejected the extra field outright; retry without it.
