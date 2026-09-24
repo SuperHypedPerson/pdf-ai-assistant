@@ -37,7 +37,14 @@ jobs: dict[str, dict] = {}
 
 
 def _book_path(book_id: str) -> Path | None:
-    matches = list(UPLOAD_DIR.glob(f"{book_id}__*.pdf"))
+    # One subdirectory per book id, so the stored file keeps its original,
+    # clean filename — extract_structure()'s title fallback reads the
+    # file's own stem, and a hash-prefixed filename would leak into that
+    # title whenever a PDF has no embedded metadata title.
+    book_dir = UPLOAD_DIR / book_id
+    if not book_dir.is_dir():
+        return None
+    matches = list(book_dir.glob("*.pdf"))
     return matches[0] if matches else None
 
 
@@ -48,7 +55,9 @@ async def upload_pdf(file: UploadFile):
     import hashlib
     content_hash = hashlib.sha1(contents).hexdigest()[:16]
     safe_name = "".join(c for c in file.filename if c.isalnum() or c in " ._-()") or "book.pdf"
-    dest = UPLOAD_DIR / f"{content_hash}__{safe_name}"
+    book_dir = UPLOAD_DIR / content_hash
+    book_dir.mkdir(exist_ok=True)
+    dest = book_dir / safe_name
     if not dest.exists():
         dest.write_bytes(contents)
     return {"book_id": content_hash, "filename": safe_name}
@@ -57,9 +66,12 @@ async def upload_pdf(file: UploadFile):
 @app.get("/api/books")
 def list_books():
     books = []
-    for f in UPLOAD_DIR.glob("*__*.pdf"):
-        book_id, _, name = f.stem.partition("__")
-        books.append({"book_id": book_id, "filename": name + ".pdf"})
+    for book_dir in UPLOAD_DIR.iterdir():
+        if not book_dir.is_dir():
+            continue
+        pdfs = list(book_dir.glob("*.pdf"))
+        if pdfs:
+            books.append({"book_id": book_dir.name, "filename": pdfs[0].name})
     return books
 
 
