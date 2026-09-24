@@ -6,4 +6,5 @@ venv/
 .venv/
 manifest.json
 run_log.jsonl
+web/uploads/
 

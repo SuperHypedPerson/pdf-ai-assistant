@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Textbook Notes + Quiz Generator</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="shell">
+  <header class="hero">
+    <h1>Textbook Notes + Quiz Generator</h1>
+    <p>Upload a PDF, pick what matters, let a local model do the distilling.</p>
+  </header>
+
+  <div id="error-banner" class="error-banner hidden"></div>
+
+  <!-- Upload -->
+  <section id="upload-section" class="card">
+    <div id="dropzone" class="dropzone">
+      <div class="icon">📄</div>
+      <div class="primary">Drop a PDF here, or click to browse</div>
+      <div class="secondary">Structure gets parsed automatically once uploaded</div>
+      <input type="file" id="file-input" accept="application/pdf">
+    </div>
+    <div class="recent-books hidden" id="recent-books">
+      <h3>Recently used</h3>
+      <div class="book-chip-list" id="book-chip-list"></div>
+    </div>
+  </section>
+
+  <!-- Loading -->
+  <section id="loading-section" class="card hidden">
+    <div class="loading-panel">
+      <div class="spinner"></div>
+      <div class="label" id="loading-label">Parsing structure…</div>
+      <div class="sub-label" id="loading-sub">This can take a while for scanned PDFs (OCR fallback).</div>
+    </div>
+  </section>
+
+  <!-- Structure / picker -->
+  <section id="structure-section" class="hidden">
+    <div class="card">
+      <div class="book-header">
+        <h2 id="book-title">—</h2>
+        <span class="book-meta" id="book-meta"></span>
+      </div>
+
+      <div id="scanned-notice" class="notice warn hidden"></div>
+      <div id="ambiguous-notice" class="hidden"></div>
+
+      <div class="toolbar">
+        <button id="select-all">Select all</button>
+        <button id="select-none">Clear selection</button>
+        <button id="select-new">Select only new</button>
+      </div>
+
+      <div id="chapter-tree"></div>
+    </div>
+  </section>
+
+  <div id="selection-bar" class="selection-bar hidden">
+    <div class="count"><span id="selection-count">0</span> <span class="muted">subchapter(s) selected</span></div>
+    <button class="btn-primary" id="continue-btn" disabled>Continue →</button>
+  </div>
+
+  <footer class="note">Runs entirely locally — no data leaves this machine.</footer>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

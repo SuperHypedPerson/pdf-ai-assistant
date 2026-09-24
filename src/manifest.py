@@ -17,16 +17,44 @@ DEFAULT_MANIFEST_PATH = Path("manifest.json")
 
 
 def book_id(pdf_path: str | Path) -> str:
-    """Stable identifier for a book, based on its resolved absolute path."""
-    resolved = str(Path(pdf_path).resolve())
-    return hashlib.sha1(resolved.encode("utf-8")).hexdigest()[:16]
+    """Stable identifier for a book, based on its file content — not its
+    path, so the same PDF is recognized as the same book regardless of
+    where it lives (e.g. the CLI pointed at your local copy vs. the web
+    app's uploaded copy in web/uploads/)."""
+    return hashlib.sha1(Path(pdf_path).read_bytes()).hexdigest()[:16]
+
+
+def _migrate_legacy_entries(manifest: dict) -> None:
+    """Older manifests keyed books by resolved file path instead of
+    content. Re-key any such entry (in place) under its correct
+    content-based id, merging into an existing entry if one's already
+    there, so already-processed subchapters aren't silently forgotten
+    just because this identity scheme changed."""
+    for old_key in list(manifest["books"].keys()):
+        entry = manifest["books"][old_key]
+        source_file = entry.get("source_file")
+        if not source_file or not Path(source_file).exists():
+            continue
+        try:
+            correct_key = book_id(source_file)
+        except OSError:
+            continue
+        if correct_key == old_key:
+            continue
+
+        target = manifest["books"].setdefault(correct_key, entry)
+        if target is not entry:
+            target["subchapters"].update(entry["subchapters"])
+        del manifest["books"][old_key]
 
 
 def load_manifest(path: str | Path = DEFAULT_MANIFEST_PATH) -> dict:
     path = Path(path)
     if not path.exists():
         return {"books": {}}
-    return json.loads(path.read_text())
+    manifest = json.loads(path.read_text())
+    _migrate_legacy_entries(manifest)
+    return manifest
 
 
 def save_manifest(manifest: dict, path: str | Path = DEFAULT_MANIFEST_PATH) -> None:
