@@ -281,6 +281,20 @@ def extract_heuristic(doc: fitz.Document, scanned_pages: list[int]) -> BookStruc
 
         if info["ocr"]:
             for line in info["lines"]:
+                # OCR'd text carries no font-size/bold info, so there's no
+                # visual-distinction gate to fall back on the way there is
+                # for real text (below). Without one, bare-number patterns
+                # (BARE_CHAPTER_RE, SUBCHAPTER_RE, ...) false-positive
+                # constantly on OCR'd body text — a TOC line whose dot
+                # leaders collapsed into "1. Basic Properties of Numbers 3",
+                # an exercise ("5. Express each of the following..."), a
+                # misread equation. Only accept an OCR'd heading when it's
+                # unambiguously chapter/appendix-shaped ("Chapter N ...",
+                # "Appendix A ...") — anything else is silently untrusted
+                # rather than guessed, consistent with flagging ambiguity
+                # instead of dropping/misreading content.
+                if not (CHAPTER_NUMBER_RE.match(line) or APPENDIX_CHAPTER_RE.match(line)):
+                    continue
                 cls = _classify_heading_text(line)
                 if cls:
                     kind, number, title = cls
