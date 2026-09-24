@@ -24,7 +24,13 @@ from src import manifest as manifest_mod
 from src import retry as retry_mod
 from src import run_log
 from src import vault
-from src.note_generator import chapter_display_label, chapter_group_key, generate_subchapter_note, max_tokens_for
+from src.note_generator import (
+    chapter_display_label,
+    chapter_group_key,
+    generate_subchapter_note,
+    is_numbered_chapter,
+    max_tokens_for,
+)
 from src.selection import confirm_text, parse_selection, render_tree
 from src.structure_extractor import extract_structure
 
@@ -100,7 +106,12 @@ def main():
     parser.add_argument("--subject", help="Subject-area tag applied to generated notes (e.g. finance)")
     parser.add_argument("--vault", default=DEFAULT_VAULT_PATH, help="Path to your Obsidian vault")
     parser.add_argument("--all-chapters", action="store_true",
-                         help="Process every not-yet-processed subchapter in the book without prompting")
+                         help="Process every not-yet-processed subchapter in the book's real numbered "
+                              "chapters without prompting (front/back matter — cover, contents, preface, "
+                              "conclusion, bibliography, index, etc. — is skipped by default; see "
+                              "--include-front-matter)")
+    parser.add_argument("--include-front-matter", action="store_true",
+                         help="With --all-chapters, also process front/back matter (unnumbered chapters)")
     parser.add_argument("--manifest", default=str(manifest_mod.DEFAULT_MANIFEST_PATH),
                          help="Path to the manifest JSON file")
     parser.add_argument("--log", default=str(run_log.DEFAULT_LOG_PATH),
@@ -151,11 +162,16 @@ def main():
         run_log.print_summary(entry)
 
     if args.all_chapters:
-        full_selection = [(c, s) for c in structure.chapters for s in c.subchapters]
+        eligible_chapters = structure.chapters if args.include_front_matter else \
+            [c for c in structure.chapters if is_numbered_chapter(c)]
+        front_matter_excluded = len(structure.chapters) - len(eligible_chapters)
+        full_selection = [(c, s) for c in eligible_chapters for s in c.subchapters]
         selected = [(c, s) for c, s in full_selection if s.number not in processed]
         skipped = len(full_selection) - len(selected)
         print(f"\n--all-chapters: {len(selected)} new subchapter(s) to process "
-              f"({skipped} already processed, skipped).")
+              f"({skipped} already processed, skipped)"
+              + (f", {front_matter_excluded} front/back-matter chapter(s) excluded" if front_matter_excluded else "")
+              + ".")
         if not selected:
             print("Nothing new to process.")
             finish("completed", 0, 0, skipped=skipped)
