@@ -52,9 +52,18 @@ def prompt_for_selection(structure) -> list:
 
 def resolve_note_path(manifest: dict, pdf_path: str, vault_root: Path, book_title: str, chapter, subchapter) -> Path:
     """Reuse the path already on record for this subchapter (update in
-    place), or compute a fresh one from the vault layout if it's new."""
+    place), or compute a fresh one from the vault layout if it's new — or
+    if the recorded path predates the vault (e.g. Stage 3's notes_output/
+    folder) and so falls outside vault_root."""
     stored = manifest_mod.existing_note_path(manifest, pdf_path, subchapter.number)
-    return Path(stored) if stored else vault.note_path(vault_root, book_title, chapter, subchapter)
+    if stored:
+        stored_path = Path(stored)
+        try:
+            stored_path.resolve().relative_to(vault_root.resolve())
+            return stored_path
+        except ValueError:
+            pass  # stale pre-vault path; fall through to recompute
+    return vault.note_path(vault_root, book_title, chapter, subchapter)
 
 
 def build_known_notes(manifest: dict, pdf_path: str, vault_root: Path, structure, selected: list) -> dict:
