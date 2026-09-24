@@ -76,29 +76,36 @@ BODY_SECTION_RE = re.compile(r"##\s*Summary.*", re.DOTALL | re.IGNORECASE)
 CHAPTER_LABEL_RE = re.compile(r"^chapter\s+(\d+)\s*[:\-–—]?\s*(.*)$", re.IGNORECASE)
 
 
-def _chapter_label(chapter: Chapter) -> str:
+def real_chapter_number(chapter: Chapter) -> str:
     """Prefer the book's own chapter number (e.g. from a title like
     "CHAPTER 4 Mean Reversion...") over the picker's positional index,
     which includes front matter and so won't match the book's numbering."""
     match = CHAPTER_LABEL_RE.match(chapter.title.strip())
-    if match:
-        num, rest = match.group(1), match.group(2).strip()
-        return f"{num} — {rest or chapter.title}"
-    return f"{chapter.number} — {chapter.title}"
-
-
-def _real_chapter_number(chapter: Chapter) -> str:
-    match = CHAPTER_LABEL_RE.match(chapter.title.strip())
     return match.group(1) if match else chapter.number
 
 
-def _subchapter_label(chapter: Chapter, subchapter: SubChapter) -> str:
-    """Same fix as _chapter_label, applied to the subchapter number: use the
-    book's real chapter number as the prefix instead of the picker's
+def chapter_title_rest(chapter: Chapter) -> str:
+    """Chapter title with a leading "CHAPTER N" prefix stripped, if present."""
+    match = CHAPTER_LABEL_RE.match(chapter.title.strip())
+    if match:
+        return match.group(2).strip() or chapter.title
+    return chapter.title
+
+
+def real_subchapter_number(chapter: Chapter, subchapter: SubChapter) -> str:
+    """Same fix as real_chapter_number, applied to the subchapter number: use
+    the book's real chapter number as the prefix instead of the picker's
     positional index, so e.g. "7.1" (picker) renders as "4.1" (book)."""
     _, _, sub_index = subchapter.number.partition(".")
-    real_num = f"{_real_chapter_number(chapter)}.{sub_index}" if sub_index else subchapter.number
-    return f"{real_num} — {subchapter.title}"
+    return f"{real_chapter_number(chapter)}.{sub_index}" if sub_index else subchapter.number
+
+
+def _chapter_label(chapter: Chapter) -> str:
+    return f"{real_chapter_number(chapter)} — {chapter_title_rest(chapter)}"
+
+
+def _subchapter_label(chapter: Chapter, subchapter: SubChapter) -> str:
+    return f"{real_subchapter_number(chapter, subchapter)} — {subchapter.title}"
 
 
 def _yaml_str(value: str) -> str:
@@ -136,7 +143,7 @@ def _extract_body(raw_response: str) -> str:
 
 
 def render_note(book_title: str, chapter: Chapter, subchapter: SubChapter,
-                 subject: str, body: str) -> str:
+                 subject: str, body: str, related_links: list[str] | None = None) -> str:
     frontmatter = "\n".join([
         "---",
         f"source: {_yaml_str(book_title)}",
@@ -148,18 +155,21 @@ def render_note(book_title: str, chapter: Chapter, subchapter: SubChapter,
         "status: unreviewed",
         "---",
     ])
+    related_body = "\n".join(f"- {link}" for link in related_links) if related_links else \
+        "<!-- no other notes in this chapter yet -->"
     return (
         f"{frontmatter}\n\n"
         f"# {subchapter.title}\n\n"
         f"{body}\n\n"
         f"## Related\n"
-        f"<!-- populated when this book's other notes exist (Stage 4) -->\n"
+        f"{related_body}\n"
     )
 
 
 def generate_subchapter_note(pdf_path: str | Path, structure: BookStructure,
                               chapter: Chapter, subchapter: SubChapter, subject: str,
-                              client, model: str, max_tokens: int | None = None) -> str:
+                              client, model: str, max_tokens: int | None = None,
+                              related_links: list[str] | None = None) -> str:
     source_text = get_page_range_text(
         pdf_path, subchapter.page_start, subchapter.page_end, structure.scanned_pages,
     )
@@ -175,7 +185,7 @@ def generate_subchapter_note(pdf_path: str | Path, structure: BookStructure,
             f"- Pages {subchapter.page_start}-{subchapter.page_end} yielded "
             f"{len(source_text.strip())} characters of extractable text."
         )
-        return render_note(structure.title, chapter, subchapter, subject, body)
+        return render_note(structure.title, chapter, subchapter, subject, body, related_links)
 
     prompt = build_prompt(structure.title, chapter, subchapter, subject, source_text)
     tokens = max_tokens or _max_tokens_for(subchapter)
@@ -183,4 +193,4 @@ def generate_subchapter_note(pdf_path: str | Path, structure: BookStructure,
     body = _extract_body(raw)
     if truncated:
         body += TRUNCATION_WARNING
-    return render_note(structure.title, chapter, subchapter, subject, body)
+    return render_note(structure.title, chapter, subchapter, subject, body, related_links)

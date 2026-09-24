@@ -5,5 +5,4 @@ __pycache__/
 venv/
 .venv/
 manifest.json
-notes_output/
 

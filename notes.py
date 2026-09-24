@@ -4,24 +4,28 @@ notes.py --file book.pdf --subject SUBJECT
 
 Parses the PDF's structure, shows it to you, lets you pick which
 chapters/subchapters to process, and generates one Obsidian note per
-selected subchapter via a local LM Studio model.
+selected subchapter via a local LM Studio model — written into the vault
+at <Vault>/Textbooks/<Book Title>/<Chapter N - Title>/<N.M Title>.md, with
+a book-level index note kept up to date alongside them.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 import openai
 
-from src import manifest as manifest_mod
 from src import llm_client
-from src.note_generator import generate_subchapter_note
+from src import manifest as manifest_mod
+from src import vault
+from src.note_generator import generate_subchapter_note, real_chapter_number
 from src.selection import confirm_text, parse_selection, render_tree
 from src.structure_extractor import extract_structure
 
-OUTPUT_DIR = Path("notes_output")
+DEFAULT_VAULT_PATH = r"C:\Users\Marcus\Desktop\Textbook Notes Summarizer"
 
 
 def prompt_for_selection(structure) -> list:
@@ -46,10 +50,43 @@ def prompt_for_selection(structure) -> list:
             return selected
 
 
+def resolve_note_path(manifest: dict, pdf_path: str, vault_root: Path, book_title: str, chapter, subchapter) -> Path:
+    """Reuse the path already on record for this subchapter (update in
+    place), or compute a fresh one from the vault layout if it's new."""
+    stored = manifest_mod.existing_note_path(manifest, pdf_path, subchapter.number)
+    return Path(stored) if stored else vault.note_path(vault_root, book_title, chapter, subchapter)
+
+
+def build_known_notes(manifest: dict, pdf_path: str, vault_root: Path, structure, selected: list) -> dict:
+    """Every subchapter with a note that will exist after this run —
+    previously processed ones (from the manifest) plus this run's
+    selection — mapped to its (chapter, subchapter, resolved path)."""
+    sub_lookup = {s.number: (c, s) for c in structure.chapters for s in c.subchapters}
+
+    known = {}
+    for num in manifest_mod.processed_subchapters(manifest, pdf_path):
+        if num in sub_lookup:
+            chap, sub = sub_lookup[num]
+            known[num] = (chap, sub, resolve_note_path(manifest, pdf_path, vault_root, structure.title, chap, sub))
+
+    for chap, sub in selected:
+        known[sub.number] = (chap, sub, resolve_note_path(manifest, pdf_path, vault_root, structure.title, chap, sub))
+
+    return known
+
+
+def group_by_chapter(known: dict) -> dict:
+    by_chapter = defaultdict(list)
+    for chap, sub, path in known.values():
+        by_chapter[real_chapter_number(chap)].append((sub, path))
+    return by_chapter
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate Obsidian notes from selected chapters of a PDF textbook.")
     parser.add_argument("--file", required=True, help="Path to the PDF file")
     parser.add_argument("--subject", help="Subject-area tag applied to generated notes (e.g. finance)")
+    parser.add_argument("--vault", default=DEFAULT_VAULT_PATH, help="Path to your Obsidian vault")
     parser.add_argument("--all-chapters", action="store_true",
                          help="Process every chapter without prompting (Stage 6 — not implemented yet)")
     parser.add_argument("--manifest", default=str(manifest_mod.DEFAULT_MANIFEST_PATH),
@@ -67,6 +104,7 @@ def main():
     if not args.all_chapters and not args.subject:
         parser.error("--subject is required (e.g. --subject finance)")
 
+    vault_root = Path(args.vault)
     structure = extract_structure(args.file)
 
     manifest = manifest_mod.load_manifest(args.manifest)
@@ -84,16 +122,22 @@ def main():
     client = llm_client.get_client(args.lmstudio_url, timeout=args.timeout)
     model = args.model or llm_client.get_model_name()
 
-    OUTPUT_DIR.mkdir(exist_ok=True)
+    known = build_known_notes(manifest, args.file, vault_root, structure, selected)
+    by_chapter = group_by_chapter(known)
+
     print(f"\nGenerating notes via LM Studio ({model})...\n")
 
     generated = 0
     for chapter, subchapter in selected:
         print(f"  {subchapter.number} {subchapter.title} ...", end=" ", flush=True)
+
+        siblings = by_chapter[real_chapter_number(chapter)]
+        related_links = [vault.wikilink(vault_root, path) for sib, path in siblings if sib.number != subchapter.number]
+
         try:
             note_md = generate_subchapter_note(
                 args.file, structure, chapter, subchapter, args.subject, client, model,
-                max_tokens=args.max_tokens,
+                max_tokens=args.max_tokens, related_links=related_links,
             )
         except llm_client.EmptyResponseError as e:
             print("FAILED (empty response)")
@@ -113,15 +157,22 @@ def main():
             print("Make sure the LM Studio local server is running and the model is loaded, then re-run.")
             sys.exit(1)
 
-        safe_title = "".join(c for c in subchapter.title if c.isalnum() or c in " -_").strip()
-        out_path = OUTPUT_DIR / f"{subchapter.number} {safe_title}.md"
-        out_path.write_text(note_md)
+        out_path = known[subchapter.number][2]
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(note_md, encoding="utf-8")
         manifest_mod.mark_processed(manifest, args.file, subchapter.number, str(out_path))
         generated += 1
         print(f"-> {out_path}")
 
+    chapter_by_number = {real_chapter_number(c): c for c in structure.chapters}
+    index_md = vault.render_index(vault_root, structure.title, structure, chapter_by_number, by_chapter)
+    index_out = vault.index_path(vault_root, structure.title)
+    index_out.parent.mkdir(parents=True, exist_ok=True)
+    index_out.write_text(index_md, encoding="utf-8")
+
     manifest_mod.save_manifest(manifest, args.manifest)
-    print(f"\n{generated} note(s) written to {OUTPUT_DIR}/")
+    print(f"\n{generated} note(s) written under {vault.book_folder(vault_root, structure.title)}/")
+    print(f"Index updated: {index_out}")
 
 
 if __name__ == "__main__":

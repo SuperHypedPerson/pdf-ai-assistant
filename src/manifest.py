@@ -54,6 +54,15 @@ def processed_subchapters(manifest: dict, pdf_path: str | Path) -> set[str]:
     return {num for num, info in book["subchapters"].items() if info.get("status") == "processed"}
 
 
+def existing_note_path(manifest: dict, pdf_path: str | Path, sub_number: str) -> str | None:
+    bid = book_id(pdf_path)
+    book = manifest["books"].get(bid)
+    if not book:
+        return None
+    entry = book["subchapters"].get(sub_number)
+    return entry.get("note_path") if entry else None
+
+
 def mark_processed(manifest: dict, pdf_path: str | Path, sub_number: str, note_path: str) -> None:
     bid = book_id(pdf_path)
     book = manifest["books"][bid]
