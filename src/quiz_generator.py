@@ -69,7 +69,7 @@ def _selection_label(selected: list[tuple[Chapter, SubChapter]]) -> str:
     return ", ".join(parts)
 
 
-def _max_tokens_for(num_questions: int) -> int:
+def max_tokens_for(num_questions: int) -> int:
     return min(MAX_TOKENS_CAP, BASE_MAX_TOKENS + TOKENS_PER_QUESTION * num_questions)
 
 
@@ -197,7 +197,7 @@ def generate_quiz(pdf_path: str | Path, structure: BookStructure,
     source_text = build_source_text(pdf_path, structure, selected)
     prompt = build_prompt(structure.title, subject, difficulty, num_mcq, num_short, source_text)
 
-    tokens = max_tokens or _max_tokens_for(num_questions)
+    tokens = max_tokens or max_tokens_for(num_questions)
     raw, truncated = llm_generate(client, model, SYSTEM_PROMPT, prompt, max_tokens=tokens)
     questions, dropped = _parse_questions(raw)
 

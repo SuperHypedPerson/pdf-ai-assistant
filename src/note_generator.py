@@ -29,7 +29,7 @@ TRUNCATION_WARNING = (
 )
 
 
-def _max_tokens_for(subchapter: SubChapter) -> int:
+def max_tokens_for(subchapter: SubChapter) -> int:
     page_count = max(1, subchapter.page_end - subchapter.page_start + 1)
     return min(MAX_TOKENS_CAP, DEFAULT_MAX_TOKENS + TOKENS_PER_PAGE * page_count)
 
@@ -188,7 +188,7 @@ def generate_subchapter_note(pdf_path: str | Path, structure: BookStructure,
         return render_note(structure.title, chapter, subchapter, subject, body, related_links)
 
     prompt = build_prompt(structure.title, chapter, subchapter, subject, source_text)
-    tokens = max_tokens or _max_tokens_for(subchapter)
+    tokens = max_tokens or max_tokens_for(subchapter)
     raw, truncated = llm_generate(client, model, SYSTEM_PROMPT, prompt, max_tokens=tokens)
     body = _extract_body(raw)
     if truncated:

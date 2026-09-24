@@ -21,9 +21,10 @@ import openai
 
 from src import llm_client
 from src import manifest as manifest_mod
+from src import retry as retry_mod
 from src import run_log
 from src import vault
-from src.note_generator import chapter_title_rest, generate_subchapter_note, real_chapter_number
+from src.note_generator import chapter_title_rest, generate_subchapter_note, max_tokens_for, real_chapter_number
 from src.selection import confirm_text, parse_selection, render_tree
 from src.structure_extractor import extract_structure
 
@@ -191,17 +192,26 @@ def main():
         related_links = [vault.wikilink(vault_root, path) for sib, path in siblings if sib.number != subchapter.number]
         resolved_path = resolve_note_path(manifest, args.file, vault_root, structure.title, chapter, subchapter)
 
+        def on_retry(attempt: int, reason: str, next_tokens: int) -> None:
+            label = "hit its token limit" if reason == "token_limit" else "timed out"
+            print(f"\n    {label} (attempt {attempt}/{retry_mod.MAX_ATTEMPTS}) "
+                  f"— retrying with max_tokens={next_tokens}...", end=" ", flush=True)
+
         try:
-            note_md = generate_subchapter_note(
-                args.file, structure, chapter, subchapter, args.subject, client, model,
-                max_tokens=args.max_tokens, related_links=related_links,
+            note_md = retry_mod.call_with_retry(
+                lambda mt: generate_subchapter_note(
+                    args.file, structure, chapter, subchapter, args.subject, client, model,
+                    max_tokens=mt, related_links=related_links,
+                ),
+                initial_max_tokens=args.max_tokens or max_tokens_for(subchapter),
+                on_retry=on_retry,
             )
         except llm_client.EmptyResponseError as e:
-            print("FAILED (empty response) — skipping, will retry on next run")
+            print("FAILED (empty response, exhausted retries) — skipping, will retry on next run")
             failed.append(subchapter.number)
             continue
         except openai.APITimeoutError:
-            print("FAILED (timed out) — skipping, will retry on next run")
+            print("FAILED (timed out, exhausted retries) — skipping, will retry on next run")
             failed.append(subchapter.number)
             continue
         except openai.APIConnectionError:

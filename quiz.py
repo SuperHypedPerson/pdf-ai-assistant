@@ -20,9 +20,10 @@ import openai
 
 from src import llm_client
 from src import manifest as manifest_mod
+from src import retry as retry_mod
 from src import run_log
 from src import vault
-from src.quiz_generator import QuizParseError, generate_quiz
+from src.quiz_generator import QuizParseError, generate_quiz, max_tokens_for
 from src.selection import confirm_text, parse_selection, render_tree
 from src.structure_extractor import extract_structure
 
@@ -111,10 +112,18 @@ def main():
 
     print(f"\nGenerating a {args.num_questions}-question ({args.difficulty}) quiz via LM Studio ({model})...")
 
+    def on_retry(attempt: int, reason: str, next_tokens: int) -> None:
+        label = "hit its token limit" if reason == "token_limit" else "timed out"
+        print(f"  {label} (attempt {attempt}/{retry_mod.MAX_ATTEMPTS}) — retrying with max_tokens={next_tokens}...")
+
     try:
-        quiz_md, delivered = generate_quiz(
-            args.file, structure, selected, args.subject, args.difficulty,
-            args.num_questions, client, model, max_tokens=args.max_tokens,
+        quiz_md, delivered = retry_mod.call_with_retry(
+            lambda mt: generate_quiz(
+                args.file, structure, selected, args.subject, args.difficulty,
+                args.num_questions, client, model, max_tokens=mt,
+            ),
+            initial_max_tokens=args.max_tokens or max_tokens_for(args.num_questions),
+            on_retry=on_retry,
         )
         if delivered < args.num_questions:
             print(f"\nNote: {delivered}/{args.num_questions} questions delivered — "
@@ -125,12 +134,12 @@ def main():
         finish("failed", error=str(e))
         sys.exit(1)
     except llm_client.EmptyResponseError as e:
-        print("FAILED (empty response)")
+        print("FAILED (empty response, exhausted retries)")
         print(f"\n{e}")
         finish("failed", error=str(e))
         sys.exit(1)
     except openai.APITimeoutError:
-        msg = f"LM Studio didn't respond within {args.timeout:.0f}s."
+        msg = f"LM Studio didn't respond within {args.timeout:.0f}s (exhausted retries)."
         print("FAILED (timed out)")
         print(f"\n{msg}")
         print("Check the LM Studio server window/log — try --timeout 600 if it's just slow, "
