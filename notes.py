@@ -90,6 +90,13 @@ def main():
             note_md = generate_subchapter_note(
                 args.file, structure, chapter, subchapter, args.subject, client, model,
             )
+        except openai.APITimeoutError:
+            print("FAILED (timed out)")
+            print(f"\nLM Studio didn't respond within {llm_client.DEFAULT_TIMEOUT_SECONDS:.0f}s.")
+            print("Check the LM Studio server window/log — the model may still be loading, "
+                  "generation may be slow on your hardware, or the request may have exceeded "
+                  "the model's context window. Try a shorter selection or raise the timeout.")
+            sys.exit(1)
         except openai.APIConnectionError:
             print("FAILED")
             print(f"\nCouldn't reach LM Studio at {args.lmstudio_url or llm_client.DEFAULT_BASE_URL}.")

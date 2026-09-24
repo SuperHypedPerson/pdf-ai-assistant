@@ -11,12 +11,15 @@ from openai import OpenAI
 
 DEFAULT_BASE_URL = "http://localhost:1234/v1"
 DEFAULT_MODEL = "qwen3.5-9b"
+DEFAULT_TIMEOUT_SECONDS = 180.0
 
 
-def get_client(base_url: str | None = None) -> OpenAI:
+def get_client(base_url: str | None = None, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> OpenAI:
     return OpenAI(
         base_url=base_url or os.environ.get("LMSTUDIO_BASE_URL", DEFAULT_BASE_URL),
         api_key="lm-studio",  # LM Studio ignores the key but the SDK requires one
+        timeout=timeout,
+        max_retries=0,
     )
 
 
