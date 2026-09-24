@@ -37,9 +37,12 @@ def get_model_name() -> str:
 
 def generate(client: OpenAI, model: str, system_prompt: str, user_prompt: str,
              temperature: float = 0.3, max_tokens: int = DEFAULT_MAX_TOKENS) -> str:
+    # Qwen3's documented chat-template directive to skip its <think> pass
+    # entirely — more reliable than the API-level enable_thinking flag,
+    # which some backends (including LM Studio's) silently ignore.
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
+        {"role": "user", "content": user_prompt + "\n/no_think"},
     ]
     try:
         response = client.chat.completions.create(

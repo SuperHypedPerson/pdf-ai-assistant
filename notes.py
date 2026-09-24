@@ -58,6 +58,8 @@ def main():
                          help=f"LM Studio base URL (default: {llm_client.DEFAULT_BASE_URL})")
     parser.add_argument("--model", default=None,
                          help=f"Model name as loaded in LM Studio (default: {llm_client.DEFAULT_MODEL})")
+    parser.add_argument("--timeout", type=float, default=llm_client.DEFAULT_TIMEOUT_SECONDS,
+                         help=f"Seconds to wait for LM Studio per request (default: {llm_client.DEFAULT_TIMEOUT_SECONDS:.0f})")
     args = parser.parse_args()
 
     if not args.all_chapters and not args.subject:
@@ -77,7 +79,7 @@ def main():
 
     selected = prompt_for_selection(structure)
 
-    client = llm_client.get_client(args.lmstudio_url)
+    client = llm_client.get_client(args.lmstudio_url, timeout=args.timeout)
     model = args.model or llm_client.get_model_name()
 
     OUTPUT_DIR.mkdir(exist_ok=True)
@@ -96,10 +98,11 @@ def main():
             sys.exit(1)
         except openai.APITimeoutError:
             print("FAILED (timed out)")
-            print(f"\nLM Studio didn't respond within {llm_client.DEFAULT_TIMEOUT_SECONDS:.0f}s.")
-            print("Check the LM Studio server window/log — the model may still be loading, "
-                  "generation may be slow on your hardware, or the request may have exceeded "
-                  "the model's context window. Try a shorter selection or raise the timeout.")
+            print(f"\nLM Studio didn't respond within {args.timeout:.0f}s.")
+            print("Check the LM Studio server window/log for this request — if it's still "
+                  "generating, your hardware may just be slow for this model; re-run with "
+                  "--timeout 600 (or higher). If the log shows it finished or errored, that's "
+                  "a different problem — paste the log here.")
             sys.exit(1)
         except openai.APIConnectionError:
             print("FAILED")
