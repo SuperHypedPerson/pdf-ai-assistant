@@ -42,6 +42,11 @@ BARE_CHAPTER_RE = re.compile(r"^(\d{1,3})\.?\s+(\S.*)$")
 SUBCHAPTER_RE = re.compile(r"^(\d{1,3})\.(\d{1,3})\.?\s+(\S.*)$")
 DEEPER_RE = re.compile(r"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.?\s+(\S.*)$")
 
+# Appendices are lettered (A, B, ...), not numbered, and common enough in
+# math/CS textbooks that dropping them silently would be a real data loss.
+APPENDIX_CHAPTER_RE = re.compile(r"^appendix\s+([A-Z])\b[\s:.\-–—]*(.*)$", re.IGNORECASE)
+APPENDIX_SUBCHAPTER_RE = re.compile(r"^([A-Z])\.(\d{1,3})\.?\s+(\S.*)$")
+
 
 @dataclass
 class SubChapter:
@@ -240,9 +245,17 @@ def _classify_heading_text(text: str) -> Optional[tuple[str, str, str]]:
     if m:
         return ("deeper", f"{m.group(1)}.{m.group(2)}.{m.group(3)}", m.group(4).strip())
 
+    m = APPENDIX_SUBCHAPTER_RE.match(text)
+    if m:
+        return ("subchapter", f"{m.group(1).upper()}.{m.group(2)}", m.group(3).strip())
+
     m = SUBCHAPTER_RE.match(text)
     if m:
         return ("subchapter", f"{m.group(1)}.{m.group(2)}", m.group(3).strip())
+
+    m = APPENDIX_CHAPTER_RE.match(text)
+    if m:
+        return ("chapter", m.group(1).upper(), (m.group(2) or "").strip() or text)
 
     m = CHAPTER_NUMBER_RE.match(text)
     if m:
@@ -298,7 +311,8 @@ def extract_heuristic(doc: fitz.Document, scanned_pages: list[int]) -> BookStruc
                 # Require visual distinction (size or bold) to avoid false
                 # positives from numbered list items / body text that happens
                 # to start with digits, UNLESS it's an unambiguous "Chapter N" form.
-                looks_like_explicit_chapter = bool(CHAPTER_NUMBER_RE.match(line_text))
+                looks_like_explicit_chapter = bool(CHAPTER_NUMBER_RE.match(line_text)) or \
+                    bool(APPENDIX_CHAPTER_RE.match(line_text))
                 if not (is_large or is_bold or looks_like_explicit_chapter):
                     continue
 
