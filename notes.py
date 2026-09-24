@@ -24,7 +24,7 @@ from src import manifest as manifest_mod
 from src import retry as retry_mod
 from src import run_log
 from src import vault
-from src.note_generator import chapter_title_rest, generate_subchapter_note, max_tokens_for, real_chapter_number
+from src.note_generator import chapter_display_label, chapter_group_key, generate_subchapter_note, max_tokens_for
 from src.selection import confirm_text, parse_selection, render_tree
 from src.structure_extractor import extract_structure
 
@@ -90,7 +90,7 @@ def build_known_notes(manifest: dict, pdf_path: str, vault_root: Path, structure
 def group_by_chapter(known: dict) -> dict:
     by_chapter = defaultdict(list)
     for chap, sub, path in known.values():
-        by_chapter[real_chapter_number(chap)].append((sub, path))
+        by_chapter[chapter_group_key(chap)].append((sub, path))
     return by_chapter
 
 
@@ -181,14 +181,14 @@ def main():
     current_chapter_num = None
 
     for chapter, subchapter in selected:
-        chap_num = real_chapter_number(chapter)
-        if chap_num != current_chapter_num:
-            current_chapter_num = chap_num
-            print(f"\n=== Chapter {chap_num} - {chapter_title_rest(chapter)} ===")
+        group_key = chapter_group_key(chapter)
+        if group_key != current_chapter_num:
+            current_chapter_num = group_key
+            print(f"\n=== {chapter_display_label(chapter)} ===")
 
         print(f"  {subchapter.number} {subchapter.title} ...", end=" ", flush=True)
 
-        siblings = by_chapter[chap_num]
+        siblings = by_chapter[group_key]
         related_links = [vault.wikilink(vault_root, path) for sib, path in siblings if sib.number != subchapter.number]
         resolved_path = resolve_note_path(manifest, args.file, vault_root, structure.title, chapter, subchapter)
 
@@ -228,12 +228,12 @@ def main():
         resolved_path.write_text(note_md, encoding="utf-8")
         manifest_mod.mark_processed(manifest, args.file, subchapter.number, str(resolved_path))
         known[subchapter.number] = (chapter, subchapter, resolved_path)
-        by_chapter[chap_num].append((subchapter, resolved_path))
+        by_chapter[group_key].append((subchapter, resolved_path))
         generated += 1
         print(f"-> {resolved_path}")
 
-    chapter_by_number = {real_chapter_number(c): c for c in structure.chapters}
-    index_md = vault.render_index(vault_root, structure.title, structure, chapter_by_number, by_chapter)
+    chapter_by_key = {chapter_group_key(c): c for c in structure.chapters}
+    index_md = vault.render_index(vault_root, structure.title, structure, chapter_by_key, by_chapter)
     index_out = vault.index_path(vault_root, structure.title)
     index_out.parent.mkdir(parents=True, exist_ok=True)
     index_out.write_text(index_md, encoding="utf-8")

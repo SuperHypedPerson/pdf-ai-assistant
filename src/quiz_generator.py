@@ -15,7 +15,7 @@ from pathlib import Path
 
 from src.content_extractor import get_page_range_text
 from src.llm_client import generate as llm_generate
-from src.note_generator import real_chapter_number, real_subchapter_number
+from src.note_generator import real_subchapter_number
 from src.structure_extractor import BookStructure, Chapter, SubChapter
 
 BASE_MAX_TOKENS = 4096  # generous headroom for a reasoning model's "thinking" pass

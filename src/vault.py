@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from src.note_generator import chapter_title_rest, real_chapter_number, real_subchapter_number
+from src.note_generator import chapter_display_label, real_subchapter_number
 from src.structure_extractor import BookStructure, Chapter, SubChapter
 
 INVALID_CHARS_RE = re.compile(r'[\\/:*?"<>|]')
@@ -32,7 +32,7 @@ def book_folder(vault_root: Path, book_title: str) -> Path:
 
 
 def chapter_folder_name(chapter: Chapter) -> str:
-    return sanitize_filename(f"Chapter {real_chapter_number(chapter)} - {chapter_title_rest(chapter)}")
+    return sanitize_filename(chapter_display_label(chapter))
 
 
 def chapter_folder(vault_root: Path, book_title: str, chapter: Chapter) -> Path:
@@ -67,18 +67,24 @@ def wikilink(vault_root: Path, target_note_path: Path) -> str:
 
 
 def render_index(vault_root: Path, book_title: str, structure: BookStructure,
-                  chapter_by_number: dict[str, Chapter],
+                  chapter_by_key: dict[str, Chapter],
                   notes_by_chapter: dict[str, list[tuple[SubChapter, Path]]]) -> str:
-    """notes_by_chapter maps a chapter's real number -> [(subchapter, note_path), ...]
-    for every subchapter that has a generated note so far, not just this run's."""
+    """notes_by_chapter maps a chapter's group key (note_generator.chapter_group_key
+    — collision-free between real chapters and front/back matter) to
+    [(subchapter, note_path), ...] for every subchapter that has a generated
+    note so far, not just this run's."""
     lines = [f"# {book_title} — Index", ""]
 
-    for real_num in sorted(notes_by_chapter, key=lambda n: [int(p) for p in n.split(".")]):
-        entries = notes_by_chapter[real_num]
+    def chapter_sort_key(key: str) -> int:
+        chapter = chapter_by_key.get(key)
+        return chapter.page_start if chapter else 0
+
+    for group_key in sorted(notes_by_chapter, key=chapter_sort_key):
+        entries = notes_by_chapter[group_key]
         if not entries:
             continue
-        chapter = chapter_by_number.get(real_num)
-        heading = f"Chapter {real_num} - {chapter_title_rest(chapter)}" if chapter else f"Chapter {real_num}"
+        chapter = chapter_by_key.get(group_key)
+        heading = chapter_display_label(chapter) if chapter else group_key
         lines.append(f"## {heading}")
 
         def sort_key(entry: tuple[SubChapter, Path]) -> list[int]:

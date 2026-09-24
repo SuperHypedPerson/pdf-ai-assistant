@@ -76,10 +76,19 @@ BODY_SECTION_RE = re.compile(r"##\s*Summary.*", re.DOTALL | re.IGNORECASE)
 CHAPTER_LABEL_RE = re.compile(r"^chapter\s+(\d+)\s*[:\-–—]?\s*(.*)$", re.IGNORECASE)
 
 
+def is_numbered_chapter(chapter: Chapter) -> bool:
+    """True if the title itself carries a real "CHAPTER N" designation.
+    Front/back matter (cover, contents, preface, bibliography, index, ...)
+    has no real chapter number at all."""
+    return bool(CHAPTER_LABEL_RE.match(chapter.title.strip()))
+
+
 def real_chapter_number(chapter: Chapter) -> str:
-    """Prefer the book's own chapter number (e.g. from a title like
-    "CHAPTER 4 Mean Reversion...") over the picker's positional index,
-    which includes front matter and so won't match the book's numbering."""
+    """The book's own chapter number (e.g. from a title like "CHAPTER 4
+    Mean Reversion..."), or the picker's positional index as a display
+    fallback for front/back matter. NOT safe as a grouping/dict key on its
+    own — a front-matter chapter's positional index can coincide with a
+    real chapter's number (e.g. both "1"). Use chapter_group_key for that."""
     match = CHAPTER_LABEL_RE.match(chapter.title.strip())
     return match.group(1) if match else chapter.number
 
@@ -92,20 +101,44 @@ def chapter_title_rest(chapter: Chapter) -> str:
     return chapter.title
 
 
+def chapter_group_key(chapter: Chapter) -> str:
+    """Collision-free key for grouping subchapters by chapter (index
+    sections, sibling Related links). Numbered and unnumbered chapters live
+    in disjoint key spaces so front matter can never merge into a real
+    chapter's section just because their numbers happen to coincide."""
+    if is_numbered_chapter(chapter):
+        return f"n{real_chapter_number(chapter)}"
+    return f"u{chapter.number}"
+
+
+def chapter_display_label(chapter: Chapter) -> str:
+    """Human-facing chapter label: "Chapter N - Title" for real chapters;
+    just the bare title for front/back matter, which has no real number to
+    show and shouldn't be presented as if it does."""
+    if is_numbered_chapter(chapter):
+        return f"Chapter {real_chapter_number(chapter)} - {chapter_title_rest(chapter)}"
+    return chapter.title
+
+
 def real_subchapter_number(chapter: Chapter, subchapter: SubChapter) -> str:
-    """Same fix as real_chapter_number, applied to the subchapter number: use
-    the book's real chapter number as the prefix instead of the picker's
-    positional index, so e.g. "7.1" (picker) renders as "4.1" (book)."""
+    """Same idea as real_chapter_number, applied to the subchapter number:
+    use the book's real chapter number as the prefix instead of the
+    picker's positional index, so e.g. "7.1" (picker) renders as "4.1"
+    (book) for a real chapter. Only meaningful when is_numbered_chapter."""
     _, _, sub_index = subchapter.number.partition(".")
     return f"{real_chapter_number(chapter)}.{sub_index}" if sub_index else subchapter.number
 
 
 def _chapter_label(chapter: Chapter) -> str:
-    return f"{real_chapter_number(chapter)} — {chapter_title_rest(chapter)}"
+    if is_numbered_chapter(chapter):
+        return f"{real_chapter_number(chapter)} — {chapter_title_rest(chapter)}"
+    return chapter.title
 
 
 def _subchapter_label(chapter: Chapter, subchapter: SubChapter) -> str:
-    return f"{real_subchapter_number(chapter, subchapter)} — {subchapter.title}"
+    if is_numbered_chapter(chapter):
+        return f"{real_subchapter_number(chapter, subchapter)} — {subchapter.title}"
+    return subchapter.title
 
 
 def _yaml_str(value: str) -> str:
