@@ -34,6 +34,10 @@ SYSTEM_PROMPT = (
     "You are an expert quiz writer for spaced-review study quizzes. You write "
     "questions that are answerable strictly from the source text you are given "
     "— never from general knowledge of the topic, even if you recognize it. "
+    "When the source involves math or code, questions/answers/options may use "
+    "LaTeX ($...$) or inline code (`...`) exactly as valid JSON string content "
+    "— escape every backslash as \\\\ and every quote as \\\" so the JSON stays "
+    "parseable; when in doubt, prefer plain text over a malformed escape. "
     "You respond with valid JSON only: no markdown code fences, no commentary "
     "before or after the JSON."
 )
@@ -52,7 +56,9 @@ questions and {num_short} short-answer questions, at {difficulty} difficulty. \
 Every question must be answerable using only the source text above.
 
 For multiple choice: exactly 4 options, exactly 1 correct, and the 3 distractors must be \
-plausible (not obviously wrong) — ideally drawn from other details in the source text.
+plausible (not obviously wrong) — ideally drawn from other details in the source text. For \
+a math/code question, a strong distractor is a plausible near-miss (a sign error, an \
+off-by-one, a swapped variable), not an unrelated wrong answer.
 
 Respond with ONLY this JSON structure, nothing else:
 {{

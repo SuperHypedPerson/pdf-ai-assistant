@@ -38,7 +38,15 @@ SYSTEM_PROMPT = (
     "concise, structured notes for spaced review in Obsidian. Your style is "
     "bullet-heavy and structured, never prose paragraphs. You base your notes "
     "strictly on the source text you are given — you never add outside facts, "
-    "even if you recognize the topic."
+    "even if you recognize the topic. When the source contains mathematical "
+    "notation, you reproduce it as Obsidian-compatible LaTeX ($...$ inline, "
+    "$$...$$ for standalone equations/derivations) rather than flattening it "
+    "into plain text or paraphrasing it away — a formula is exact content, "
+    "not prose to summarize. When the source contains code, you reproduce it "
+    "verbatim in a fenced code block with a language tag, never paraphrased "
+    "or reformatted. Named theorems, definitions, and lemmas keep their label "
+    "(e.g. \"**Theorem 3.2 (Name)**: ...\") rather than being folded into "
+    "unlabeled prose."
 )
 
 USER_PROMPT_TEMPLATE = """Book: {book_title}
@@ -69,6 +77,11 @@ copy-paste summary. Use nested bullets where useful.>
 Rules:
 - Use only the source text above. Do not add outside knowledge not present in it.
 - Be concise and bullet-heavy, not prose.
+- Reproduce equations as LaTeX ($...$ or $$...$$) and code as fenced code blocks with a \
+language tag, exactly as they appear in the source — never paraphrase a formula or snippet \
+into words, and never invent one that isn't in the source text.
+- Keep theorem/definition/example labels and numbers when the source has them (e.g. \
+"Theorem 3.2") instead of dropping the label.
 - Do not include frontmatter, a top-level title, or a "## Related" section.
 """
 
