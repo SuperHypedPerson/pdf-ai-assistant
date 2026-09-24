@@ -296,8 +296,303 @@ el("select-new").addEventListener("click", () => {
 });
 
 el("continue-btn").addEventListener("click", () => {
-  // Stage W2 (note/quiz generation UI) plugs in here.
-  alert(`${state.selected.size} subchapter(s) selected. Generation UI is the next stage — not built yet.`);
+  el("structure-section").classList.add("hidden");
+  el("selection-bar").classList.add("hidden");
+  el("generate-section").classList.remove("hidden");
+  el("subject-input").focus();
+});
+
+el("back-to-picker").addEventListener("click", () => {
+  el("generate-section").classList.add("hidden");
+  el("structure-section").classList.remove("hidden");
+  el("selection-bar").classList.remove("hidden");
+});
+
+// ---------- Generation settings ----------
+
+let genMode = "notes";
+let config = { default_vault: "", default_model: "", default_lmstudio_url: "", default_timeout: 180 };
+
+async function loadConfig() {
+  try {
+    const res = await fetch("/api/config");
+    config = await res.json();
+    el("vault-input").placeholder = config.default_vault;
+    el("lmstudio-url-input").placeholder = config.default_lmstudio_url;
+    el("model-input").placeholder = config.default_model;
+    el("timeout-input").value = config.default_timeout;
+  } catch { /* keep placeholders empty if server config isn't reachable yet */ }
+}
+loadConfig();
+
+document.querySelectorAll(".mode-tab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".mode-tab").forEach((t) => t.classList.remove("active"));
+    tab.classList.add("active");
+    genMode = tab.dataset.mode;
+    el("quiz-fields").classList.toggle("hidden", genMode !== "quiz");
+    el("start-generate-btn").textContent = genMode === "quiz" ? "Generate Quiz →" : "Start Generating →";
+  });
+});
+
+function gatherGenerationSettings() {
+  return {
+    book_id: state.bookId,
+    selection: [...state.selected],
+    subject: el("subject-input").value.trim(),
+    vault: el("vault-input").value.trim() || undefined,
+    lmstudio_url: el("lmstudio-url-input").value.trim() || undefined,
+    model: el("model-input").value.trim() || undefined,
+    timeout: el("timeout-input").value ? Number(el("timeout-input").value) : undefined,
+    max_tokens: el("max-tokens-input").value ? Number(el("max-tokens-input").value) : undefined,
+  };
+}
+
+el("start-generate-btn").addEventListener("click", async () => {
+  clearError();
+  const settings = gatherGenerationSettings();
+  if (!settings.subject) {
+    showError("Subject tag is required.");
+    el("subject-input").focus();
+    return;
+  }
+
+  el("generate-section").classList.add("hidden");
+  el("progress-section").classList.remove("hidden");
+  el("progress-title").textContent = genMode === "quiz" ? "Generating quiz…" : "Generating notes…";
+  el("progress-stats").textContent = `${settings.selection.length} subchapter(s)`;
+  el("progress-log").innerHTML = "";
+  el("progress-summary").classList.add("hidden");
+  el("back-to-start").classList.add("hidden");
+
+  if (genMode === "quiz") {
+    settings.difficulty = el("difficulty-input").value;
+    settings.num_questions = Number(el("num-questions-input").value) || 8;
+    await runQuizGeneration(settings);
+  } else {
+    await runNotesGeneration(settings);
+  }
+});
+
+// ---------- Notes generation (SSE) ----------
+
+async function runNotesGeneration(settings) {
+  let res;
+  try {
+    res = await fetch("/api/notes/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    });
+  } catch (err) {
+    showGenerationFatalError(err.message);
+    return;
+  }
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    showGenerationFatalError(data.error || `Request failed (${res.status})`);
+    return;
+  }
+  const { job_id } = await res.json();
+
+  const log = el("progress-log");
+  let currentChapterEl = null;
+  let currentRow = null;
+  let generated = 0;
+  let failedList = [];
+
+  const src = new EventSource(`/api/notes/generate/stream/${job_id}`);
+  src.onmessage = (e) => {
+    const event = JSON.parse(e.data);
+    switch (event.type) {
+      case "chapter_start": {
+        currentChapterEl = document.createElement("div");
+        currentChapterEl.className = "progress-chapter";
+        currentChapterEl.textContent = event.label;
+        log.appendChild(currentChapterEl);
+        break;
+      }
+      case "subchapter_start": {
+        currentRow = document.createElement("div");
+        currentRow.className = "progress-row";
+        currentRow.innerHTML = `<span class="status-icon working"></span><span class="title">${event.number} ${escapeHtml(event.title)}</span><span class="detail"></span>`;
+        log.appendChild(currentRow);
+        log.scrollTop = log.scrollHeight;
+        break;
+      }
+      case "retry": {
+        if (currentRow) {
+          const icon = currentRow.querySelector(".status-icon");
+          icon.className = "status-icon retry";
+          icon.textContent = "↻";
+          const detail = currentRow.querySelector(".detail");
+          const label = event.reason === "token_limit" ? "hit token limit" : "timed out";
+          detail.textContent = `${label}, retrying (${event.attempt}/3)…`;
+        }
+        break;
+      }
+      case "subchapter_done": {
+        generated++;
+        if (currentRow) {
+          const icon = currentRow.querySelector(".status-icon");
+          icon.className = "status-icon success";
+          icon.textContent = "✓";
+          currentRow.querySelector(".detail").textContent = "";
+          currentRow.classList.add("linkable");
+          currentRow.querySelector(".title").addEventListener("click", () => openPreview(event.path));
+        }
+        el("progress-stats").textContent = `${generated} generated`;
+        break;
+      }
+      case "subchapter_failed": {
+        failedList.push(event.number);
+        if (currentRow) {
+          const icon = currentRow.querySelector(".status-icon");
+          icon.className = "status-icon failed";
+          icon.textContent = "✕";
+          currentRow.classList.add("failed-row");
+          currentRow.querySelector(".detail").textContent = "failed after 3 attempts";
+        }
+        break;
+      }
+      case "connection_lost": {
+        showGenerationFatalError(event.message);
+        break;
+      }
+      case "done": {
+        renderNotesSummary(event);
+        break;
+      }
+      case "fatal_error": {
+        showGenerationFatalError(event.error);
+        break;
+      }
+      case "stream_end": {
+        src.close();
+        el("back-to-start").classList.remove("hidden");
+        break;
+      }
+    }
+  };
+  src.onerror = () => {
+    src.close();
+  };
+}
+
+function renderNotesSummary(event) {
+  const summary = el("progress-summary");
+  summary.classList.remove("hidden");
+  if (event.failed && event.failed.length) summary.classList.add("has-failures");
+  summary.innerHTML = `
+    <div><span class="big-stat">${event.generated}</span> note(s) generated</div>
+    ${event.failed && event.failed.length ? `<div style="margin-top:6px;">${event.failed.length} failed: ${event.failed.join(", ")} — re-run to retry just these.</div>` : ""}
+    ${event.connection_lost ? `<div style="margin-top:6px;color:var(--danger);">LM Studio became unreachable — stopped early.</div>` : ""}
+  `;
+  el("progress-title").textContent = event.failed && event.failed.length ? "Done (with some failures)" : "Done!";
+  el("back-to-start").classList.remove("hidden");
+}
+
+// ---------- Quiz generation (SSE) ----------
+
+async function runQuizGeneration(settings) {
+  let res;
+  try {
+    res = await fetch("/api/quiz/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    });
+  } catch (err) {
+    showGenerationFatalError(err.message);
+    return;
+  }
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    showGenerationFatalError(data.error || `Request failed (${res.status})`);
+    return;
+  }
+  const { job_id } = await res.json();
+
+  const log = el("progress-log");
+  const row = document.createElement("div");
+  row.className = "progress-row";
+  row.innerHTML = `<span class="status-icon working"></span><span class="title">${settings.num_questions}-question ${settings.difficulty} quiz</span><span class="detail"></span>`;
+  log.appendChild(row);
+
+  const src = new EventSource(`/api/quiz/generate/stream/${job_id}`);
+  src.onmessage = (e) => {
+    const event = JSON.parse(e.data);
+    switch (event.type) {
+      case "retry": {
+        const icon = row.querySelector(".status-icon");
+        icon.className = "status-icon retry";
+        icon.textContent = "↻";
+        const label = event.reason === "token_limit" ? "hit token limit" : "timed out";
+        row.querySelector(".detail").textContent = `${label}, retrying (${event.attempt}/3)…`;
+        break;
+      }
+      case "done": {
+        const icon = row.querySelector(".status-icon");
+        icon.className = "status-icon success";
+        icon.textContent = "✓";
+        row.querySelector(".detail").textContent = "";
+        row.classList.add("linkable");
+        row.querySelector(".title").addEventListener("click", () => openPreview(event.path));
+
+        const summary = el("progress-summary");
+        summary.classList.remove("hidden");
+        if (event.delivered < event.requested) summary.classList.add("has-failures");
+        summary.innerHTML = `<div><span class="big-stat">${event.delivered}</span> / ${event.requested} question(s) delivered</div>`;
+        el("progress-title").textContent = "Done!";
+        break;
+      }
+      case "fatal_error": {
+        showGenerationFatalError(event.error);
+        break;
+      }
+      case "stream_end": {
+        src.close();
+        el("back-to-start").classList.remove("hidden");
+        break;
+      }
+    }
+  };
+  src.onerror = () => {
+    src.close();
+  };
+}
+
+function showGenerationFatalError(message) {
+  const summary = el("progress-summary");
+  summary.classList.remove("hidden");
+  summary.classList.add("has-failures");
+  summary.innerHTML = `<div style="color:var(--danger);">${escapeHtml(message)}</div>`;
+  el("progress-title").textContent = "Failed";
+  el("back-to-start").classList.remove("hidden");
+}
+
+el("back-to-start").addEventListener("click", () => {
+  el("progress-section").classList.add("hidden");
+  el("generate-section").classList.remove("hidden");
+});
+
+// ---------- Preview modal ----------
+
+async function openPreview(path) {
+  try {
+    const res = await fetch(`/api/preview?path=${encodeURIComponent(path)}`);
+    const data = await res.json();
+    el("preview-title").textContent = path.split("/").pop();
+    el("preview-content").textContent = data.content || data.error || "(empty)";
+    el("preview-modal").classList.remove("hidden");
+  } catch (err) {
+    showError("Couldn't load preview: " + err.message);
+  }
+}
+
+el("preview-close").addEventListener("click", () => el("preview-modal").classList.add("hidden"));
+el("preview-modal").addEventListener("click", (e) => {
+  if (e.target.id === "preview-modal") el("preview-modal").classList.add("hidden");
 });
 
 renderRecentBooks();

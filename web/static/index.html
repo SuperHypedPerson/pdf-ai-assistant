@@ -64,6 +64,88 @@
     <button class="btn-primary" id="continue-btn" disabled>Continue →</button>
   </div>
 
+  <!-- Generation settings -->
+  <section id="generate-section" class="card hidden">
+    <div class="mode-tabs">
+      <button class="mode-tab active" data-mode="notes">📝 Generate Notes</button>
+      <button class="mode-tab" data-mode="quiz">❓ Generate Quiz</button>
+    </div>
+
+    <button id="back-to-picker" class="link-btn">← Back to chapter selection</button>
+
+    <div class="form-grid">
+      <label class="field">
+        <span>Subject tag</span>
+        <input type="text" id="subject-input" placeholder="e.g. finance, math, cs">
+      </label>
+      <label class="field">
+        <span>Vault path</span>
+        <input type="text" id="vault-input" placeholder="Path to your Obsidian vault">
+      </label>
+
+      <div id="quiz-fields" class="hidden">
+        <label class="field">
+          <span>Difficulty</span>
+          <select id="difficulty-input">
+            <option value="easy">Easy</option>
+            <option value="medium" selected>Medium</option>
+            <option value="hard">Hard</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Number of questions</span>
+          <input type="number" id="num-questions-input" value="8" min="1" max="30">
+        </label>
+      </div>
+    </div>
+
+    <details class="advanced-settings">
+      <summary>Advanced (LM Studio connection)</summary>
+      <div class="form-grid">
+        <label class="field">
+          <span>LM Studio URL</span>
+          <input type="text" id="lmstudio-url-input" placeholder="http://localhost:1234/v1">
+        </label>
+        <label class="field">
+          <span>Model name</span>
+          <input type="text" id="model-input" placeholder="qwen/qwen3.5-9b">
+        </label>
+        <label class="field">
+          <span>Timeout (seconds)</span>
+          <input type="number" id="timeout-input" value="180" min="10">
+        </label>
+        <label class="field">
+          <span>Max tokens override</span>
+          <input type="number" id="max-tokens-input" placeholder="auto">
+        </label>
+      </div>
+    </details>
+
+    <button class="btn-primary btn-generate" id="start-generate-btn">Start Generating →</button>
+  </section>
+
+  <!-- Live progress -->
+  <section id="progress-section" class="card hidden">
+    <div class="progress-header">
+      <h2 id="progress-title">Generating…</h2>
+      <div class="progress-stats" id="progress-stats"></div>
+    </div>
+    <div id="progress-log" class="progress-log"></div>
+    <div id="progress-summary" class="progress-summary hidden"></div>
+    <button id="back-to-start" class="btn-primary hidden">Start another</button>
+  </section>
+
+  <!-- Preview modal -->
+  <div id="preview-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <span id="preview-title">Preview</span>
+        <button id="preview-close" class="link-btn">✕</button>
+      </div>
+      <pre id="preview-content" class="modal-body"></pre>
+    </div>
+  </div>
+
   <footer class="note">Runs entirely locally — no data leaves this machine.</footer>
 </div>
 
