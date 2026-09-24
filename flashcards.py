@@ -23,8 +23,8 @@ from pathlib import Path
 from src import manifest as manifest_mod
 from src import run_log
 from src import vault
-from src.flashcards_generator import generate_subchapter_flashcards
-from src.note_generator import is_numbered_chapter, subchapter_title_rest
+from src.flashcards_generator import run_flashcards_generation
+from src.note_generator import is_numbered_chapter
 from src.selection import confirm_text, parse_selection, render_tree
 from src.structure_extractor import extract_structure
 
@@ -101,26 +101,22 @@ def main():
     no_note: list[str] = []
     no_concepts: list[str] = []
 
-    for chapter, subchapter in selected:
-        note_path = manifest_mod.existing_note_path(manifest, args.file, subchapter.number)
-        if not note_path or not Path(note_path).exists():
-            print(f"  {subchapter.number} {subchapter_title_rest(subchapter)} — no note yet, skipping "
-                  f"(run notes.py for this subchapter first)")
-            no_note.append(subchapter.number)
-            continue
-
-        content = generate_subchapter_flashcards(structure.title, chapter, subchapter, note_path)
-        if content is None:
-            print(f"  {subchapter.number} {subchapter_title_rest(subchapter)} — note has no Key Concepts, skipping")
-            no_concepts.append(subchapter.number)
-            continue
-
-        path = vault.flashcards_path(vault_root, structure.title, chapter, subchapter)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-        manifest_mod.mark_flashcards_processed(manifest, args.file, subchapter.number, str(path))
-        print(f"  {subchapter.number} {subchapter_title_rest(subchapter)} -> {path}")
-        generated += 1
+    for event in run_flashcards_generation(args.file, structure, selected, vault_root, manifest):
+        etype = event["type"]
+        if etype == "chapter_start":
+            print(f"\n=== {event['label']} ===")
+        elif etype == "subchapter_start":
+            print(f"  {event['number']} {event['title']} ...", end=" ", flush=True)
+        elif etype == "subchapter_done":
+            print(f"-> {event['path']}")
+        elif etype == "subchapter_skipped":
+            reason = "no note yet (run notes.py for this subchapter first)" if event["reason"] == "no_note" \
+                else "note has no Key Concepts"
+            print(f"skipped ({reason})")
+        elif etype == "done":
+            generated = event["generated"]
+            no_note = event["skipped_no_note"]
+            no_concepts = event["skipped_no_concepts"]
 
     manifest_mod.save_manifest(manifest, args.manifest)
 

@@ -346,7 +346,11 @@ document.querySelectorAll(".mode-tab").forEach((tab) => {
     tab.classList.add("active");
     genMode = tab.dataset.mode;
     el("quiz-fields").classList.toggle("hidden", genMode !== "quiz");
-    el("start-generate-btn").textContent = genMode === "quiz" ? "Generate Quiz →" : "Start Generating →";
+    el("subject-field").classList.toggle("hidden", genMode === "flashcards");
+    el("advanced-settings").classList.toggle("hidden", genMode === "flashcards");
+    el("flashcards-notice").classList.toggle("hidden", genMode !== "flashcards");
+    el("start-generate-btn").textContent =
+      genMode === "quiz" ? "Generate Quiz →" : genMode === "flashcards" ? "Generate Flashcards →" : "Start Generating →";
   });
 });
 
@@ -366,7 +370,7 @@ function gatherGenerationSettings() {
 el("start-generate-btn").addEventListener("click", async () => {
   clearError();
   const settings = gatherGenerationSettings();
-  if (!settings.subject) {
+  if (genMode !== "flashcards" && !settings.subject) {
     showError("Subject tag is required.");
     el("subject-input").focus();
     return;
@@ -374,7 +378,8 @@ el("start-generate-btn").addEventListener("click", async () => {
 
   el("generate-section").classList.add("hidden");
   el("progress-section").classList.remove("hidden");
-  el("progress-title").textContent = genMode === "quiz" ? "Generating quiz…" : "Generating notes…";
+  el("progress-title").textContent =
+    genMode === "quiz" ? "Generating quiz…" : genMode === "flashcards" ? "Generating flashcards…" : "Generating notes…";
   el("progress-stats").textContent = `${settings.selection.length} subchapter(s)`;
   el("progress-log").innerHTML = "";
   el("progress-summary").classList.add("hidden");
@@ -384,8 +389,45 @@ el("start-generate-btn").addEventListener("click", async () => {
     settings.difficulty = el("difficulty-input").value;
     settings.num_questions = Number(el("num-questions-input").value) || 8;
     await runQuizGeneration(settings);
+  } else if (genMode === "flashcards") {
+    await runFlashcardsGeneration({ book_id: settings.book_id, selection: settings.selection, vault: settings.vault });
   } else {
     await runNotesGeneration(settings);
+  }
+});
+
+// ---------- Cross-link vault (utility, not tied to a book's selection) ----------
+
+function showToast(message, isError) {
+  const existing = document.querySelector(".toast");
+  if (existing) existing.remove();
+  const toast = document.createElement("div");
+  toast.className = "toast" + (isError ? " error" : "");
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 6000);
+}
+
+el("crosslink-btn").addEventListener("click", async () => {
+  const btn = el("crosslink-btn");
+  const vaultPath = el("vault-input").value.trim() || undefined;
+  btn.disabled = true;
+  btn.textContent = "Cross-linking…";
+  try {
+    const res = await fetch("/api/crosslink/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ vault: vaultPath }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+    showToast(`Scanned ${data.notes_scanned} note(s) — ${data.notes_linked} updated with cross-book links `
+      + `(${data.terms_matched} shared term(s) across 2+ books).`);
+  } catch (err) {
+    showToast(err.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "🔗 Cross-link Vault";
   }
 });
 
@@ -436,6 +478,7 @@ function attachNotesStream(job_id) {
   let currentRow = null;
   let generated = 0;
   let sawAnyEvent = false;
+  const failedList = [];
 
   const src = new EventSource(`/api/notes/generate/stream/${job_id}`);
   src.onmessage = (e) => {
@@ -624,6 +667,117 @@ function attachQuizStream(job_id) {
   };
 }
 
+// ---------- Flashcards generation (SSE) ----------
+
+async function runFlashcardsGeneration(settings) {
+  let res;
+  try {
+    res = await fetch("/api/flashcards/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    });
+  } catch (err) {
+    showGenerationFatalError(err.message);
+    return;
+  }
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    showGenerationFatalError(data.error || `Request failed (${res.status})`);
+    return;
+  }
+  const { job_id } = await res.json();
+  saveActiveJob(job_id, "flashcards");
+  el("progress-stats").textContent = `${settings.selection.length} subchapter(s)`;
+  attachFlashcardsStream(job_id);
+}
+
+function attachFlashcardsStream(job_id) {
+  const log = el("progress-log");
+  let currentChapterEl = null;
+  let currentRow = null;
+  let generated = 0;
+  let sawAnyEvent = false;
+
+  const src = new EventSource(`/api/flashcards/generate/stream/${job_id}`);
+  src.onmessage = (e) => {
+    sawAnyEvent = true;
+    const event = JSON.parse(e.data);
+    switch (event.type) {
+      case "chapter_start": {
+        currentChapterEl = document.createElement("div");
+        currentChapterEl.className = "progress-chapter";
+        currentChapterEl.textContent = event.label;
+        log.appendChild(currentChapterEl);
+        break;
+      }
+      case "subchapter_start": {
+        currentRow = document.createElement("div");
+        currentRow.className = "progress-row";
+        currentRow.innerHTML = `<span class="status-icon working"></span><span class="title">${event.number} ${escapeHtml(event.title)}</span><span class="detail"></span>`;
+        log.appendChild(currentRow);
+        log.scrollTop = log.scrollHeight;
+        break;
+      }
+      case "subchapter_done": {
+        generated++;
+        if (currentRow) {
+          const icon = currentRow.querySelector(".status-icon");
+          icon.className = "status-icon success";
+          icon.textContent = "✓";
+          currentRow.querySelector(".detail").textContent = "";
+          currentRow.classList.add("linkable");
+          currentRow.querySelector(".title").addEventListener("click", () => openPreview(event.path));
+        }
+        el("progress-stats").textContent = `${generated} generated`;
+        break;
+      }
+      case "subchapter_skipped": {
+        if (currentRow) {
+          const icon = currentRow.querySelector(".status-icon");
+          icon.className = "status-icon retry";
+          icon.textContent = "–";
+          currentRow.querySelector(".detail").textContent =
+            event.reason === "no_note" ? "no note yet, skipped" : "no Key Concepts, skipped";
+        }
+        break;
+      }
+      case "done": {
+        const summary = el("progress-summary");
+        summary.classList.remove("hidden");
+        const skippedNoNote = event.skipped_no_note || [];
+        const skippedNoConcepts = event.skipped_no_concepts || [];
+        if (skippedNoNote.length || skippedNoConcepts.length) summary.classList.add("has-failures");
+        summary.innerHTML = `
+          <div><span class="big-stat">${event.generated}</span> flashcard file(s) generated</div>
+          ${skippedNoNote.length ? `<div style="margin-top:6px;">${skippedNoNote.length} skipped (no note yet): ${skippedNoNote.join(", ")} — run Notes generation first.</div>` : ""}
+          ${skippedNoConcepts.length ? `<div style="margin-top:6px;">${skippedNoConcepts.length} skipped (no Key Concepts): ${skippedNoConcepts.join(", ")}</div>` : ""}
+        `;
+        el("progress-title").textContent = skippedNoNote.length || skippedNoConcepts.length ? "Done (some skipped)" : "Done!";
+        el("back-to-start").classList.remove("hidden");
+        break;
+      }
+      case "fatal_error": {
+        showGenerationFatalError(event.error);
+        break;
+      }
+      case "stream_end": {
+        src.close();
+        clearActiveJob();
+        el("back-to-start").classList.remove("hidden");
+        break;
+      }
+    }
+  };
+  src.onerror = () => {
+    if (!sawAnyEvent) {
+      src.close();
+      clearActiveJob();
+      showGenerationFatalError("Couldn't find that generation job (the server may have restarted). Start a new one below.");
+    }
+  };
+}
+
 function showGenerationFatalError(message) {
   const summary = el("progress-summary");
   summary.classList.remove("hidden");
@@ -668,7 +822,8 @@ function tryReconnectActiveJob() {
 
   el("upload-section").classList.add("hidden");
   el("progress-section").classList.remove("hidden");
-  el("progress-title").textContent = active.mode === "quiz" ? "Generating quiz…" : "Generating notes…";
+  el("progress-title").textContent =
+    active.mode === "quiz" ? "Generating quiz…" : active.mode === "flashcards" ? "Generating flashcards…" : "Generating notes…";
   el("progress-stats").textContent = "reconnected";
   el("progress-log").innerHTML = "";
   el("progress-summary").classList.add("hidden");
@@ -676,6 +831,8 @@ function tryReconnectActiveJob() {
 
   if (active.mode === "quiz") {
     attachQuizStream(active.jobId);
+  } else if (active.mode === "flashcards") {
+    attachFlashcardsStream(active.jobId);
   } else {
     attachNotesStream(active.jobId);
   }

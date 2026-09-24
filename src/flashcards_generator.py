@@ -18,8 +18,11 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Iterator
 
-from src.note_generator import chapter_display_label, subchapter_title_rest
+from src import manifest as manifest_mod
+from src import vault
+from src.note_generator import chapter_display_label, chapter_group_key, subchapter_title_rest
 from src.structure_extractor import Chapter, SubChapter
 
 KEY_CONCEPT_RE = re.compile(r"^-\s*\*\*(.+?)\*\*:\s*(.+)$")
@@ -78,3 +81,53 @@ def generate_subchapter_flashcards(book_title: str, chapter: Chapter, subchapter
     if not concepts:
         return None
     return render_flashcards(book_title, chapter, subchapter, concepts)
+
+
+def run_flashcards_generation(pdf_path: str, structure, selected: list, vault_root: Path,
+                               manifest: dict) -> Iterator[dict]:
+    """Shared pipeline used by both flashcards.py (CLI) and the web app's
+    flashcards endpoint — mirrors notes_pipeline.run_notes_generation's
+    shape so both callers can render its events the same way. Mutates
+    `manifest` in place (mark_flashcards_processed) but does not save it to
+    disk; the caller does that once the generator is exhausted. Yields:
+      {"type": "chapter_start", "label": str}
+      {"type": "subchapter_start", "number": str, "title": str}
+      {"type": "subchapter_done", "number": str, "path": str}
+      {"type": "subchapter_skipped", "number": str, "reason": "no_note" | "no_concepts"}
+      {"type": "done", "generated": int, "skipped_no_note": list[str], "skipped_no_concepts": list[str]}
+    """
+    generated = 0
+    skipped_no_note: list[str] = []
+    skipped_no_concepts: list[str] = []
+    current_group_key = None
+
+    for chapter, subchapter in selected:
+        group_key = chapter_group_key(chapter)
+        if group_key != current_group_key:
+            current_group_key = group_key
+            yield {"type": "chapter_start", "label": chapter_display_label(chapter)}
+
+        title = subchapter_title_rest(subchapter)
+        yield {"type": "subchapter_start", "number": subchapter.number, "title": title}
+
+        note_path = manifest_mod.existing_note_path(manifest, pdf_path, subchapter.number)
+        if not note_path or not Path(note_path).exists():
+            skipped_no_note.append(subchapter.number)
+            yield {"type": "subchapter_skipped", "number": subchapter.number, "reason": "no_note"}
+            continue
+
+        content = generate_subchapter_flashcards(structure.title, chapter, subchapter, note_path)
+        if content is None:
+            skipped_no_concepts.append(subchapter.number)
+            yield {"type": "subchapter_skipped", "number": subchapter.number, "reason": "no_concepts"}
+            continue
+
+        path = vault.flashcards_path(vault_root, structure.title, chapter, subchapter)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        manifest_mod.mark_flashcards_processed(manifest, pdf_path, subchapter.number, str(path))
+        generated += 1
+        yield {"type": "subchapter_done", "number": subchapter.number, "path": str(path)}
+
+    yield {"type": "done", "generated": generated,
+           "skipped_no_note": skipped_no_note, "skipped_no_concepts": skipped_no_concepts}

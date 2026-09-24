@@ -70,12 +70,18 @@
     <div class="mode-tabs">
       <button class="mode-tab active" data-mode="notes">📝 Generate Notes</button>
       <button class="mode-tab" data-mode="quiz">❓ Generate Quiz</button>
+      <button class="mode-tab" data-mode="flashcards">🗃️ Generate Flashcards</button>
     </div>
 
     <button id="back-to-picker" class="link-btn">← Back to chapter selection</button>
 
+    <div id="flashcards-notice" class="notice hidden">
+      Flashcards are derived from notes you've already generated for these subchapters — no LLM call, and
+      subchapters with no note yet (or no Key Concepts) are skipped automatically.
+    </div>
+
     <div class="form-grid">
-      <label class="field">
+      <label class="field" id="subject-field">
         <span>Subject tag</span>
         <input type="text" id="subject-input" placeholder="e.g. finance, math, cs">
       </label>
@@ -100,7 +106,7 @@
       </div>
     </div>
 
-    <details class="advanced-settings">
+    <details class="advanced-settings" id="advanced-settings">
       <summary>Advanced (LM Studio connection)</summary>
       <div class="form-grid">
         <label class="field">
@@ -122,7 +128,10 @@
       </div>
     </details>
 
-    <button class="btn-primary btn-generate" id="start-generate-btn">Start Generating →</button>
+    <div class="generate-actions">
+      <button class="btn-primary btn-generate" id="start-generate-btn">Start Generating →</button>
+      <button class="btn-secondary" id="crosslink-btn" title="Vault-wide: links notes across different books that share Key Concepts terms">🔗 Cross-link Vault</button>
+    </div>
   </section>
 
   <!-- Live progress -->

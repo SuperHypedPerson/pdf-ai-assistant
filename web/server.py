@@ -28,11 +28,13 @@ from pydantic import BaseModel
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from src import crosslink as crosslink_mod  # noqa: E402
 from src import llm_client  # noqa: E402
 from src import manifest as manifest_mod  # noqa: E402
 from src import notes_pipeline  # noqa: E402
 from src import retry as retry_mod  # noqa: E402
 from src import vault  # noqa: E402
+from src.flashcards_generator import run_flashcards_generation  # noqa: E402
 from src.note_generator import is_numbered_chapter  # noqa: E402
 from src.quiz_generator import QuizParseError, generate_quiz, max_tokens_for as quiz_max_tokens_for  # noqa: E402
 from src.structure_extractor import extract_structure  # noqa: E402
@@ -345,6 +347,76 @@ def stream_quiz_generation(job_id: str):
     if job_stream is None:
         return JSONResponse({"error": "job not found"}, status_code=404)
     return StreamingResponse(_sse_stream(job_stream), media_type="text/event-stream")
+
+
+# --------------------------------------------------------------------------
+# Flashcards generation — derived from already-generated notes, no LLM call
+# --------------------------------------------------------------------------
+
+class FlashcardsGenerateRequest(BaseModel):
+    book_id: str
+    selection: list[str]
+    vault: str | None = None
+
+
+@app.post("/api/flashcards/generate")
+def start_flashcards_generation(body: FlashcardsGenerateRequest):
+    pdf_path = _book_path(body.book_id)
+    if pdf_path is None:
+        return JSONResponse({"error": "book not found"}, status_code=404)
+
+    structure = structure_cache.get(body.book_id) or extract_structure(pdf_path)
+    structure_cache[body.book_id] = structure
+    selected = _resolve_selection(structure, set(body.selection))
+    if not selected:
+        return JSONResponse({"error": "no matching subchapters in selection"}, status_code=400)
+
+    vault_root = Path(body.vault or DEFAULT_VAULT_PATH)
+    manifest = manifest_mod.load_manifest(MANIFEST_PATH)
+    manifest_mod.ensure_book_entry(manifest, pdf_path, structure.title)
+
+    job_id = str(uuid.uuid4())
+    job_stream = JobStream()
+    jobs[job_id] = job_stream
+
+    def worker():
+        try:
+            for event in run_flashcards_generation(str(pdf_path), structure, selected, vault_root, manifest):
+                job_stream.publish(event)
+            manifest_mod.save_manifest(manifest, MANIFEST_PATH)
+        except Exception as e:  # noqa: BLE001
+            job_stream.publish({"type": "fatal_error", "error": str(e)})
+        finally:
+            job_stream.publish(None)
+
+    Thread(target=worker, daemon=True).start()
+    return {"job_id": job_id}
+
+
+@app.get("/api/flashcards/generate/stream/{job_id}")
+def stream_flashcards_generation(job_id: str):
+    job_stream = jobs.get(job_id)
+    if job_stream is None:
+        return JSONResponse({"error": "job not found"}, status_code=404)
+    return StreamingResponse(_sse_stream(job_stream), media_type="text/event-stream")
+
+
+# --------------------------------------------------------------------------
+# Cross-book linking — vault-wide, not scoped to one book's selection
+# --------------------------------------------------------------------------
+
+class CrosslinkRequest(BaseModel):
+    vault: str | None = None
+
+
+@app.post("/api/crosslink/run")
+def run_crosslink(body: CrosslinkRequest):
+    vault_root = Path(body.vault or DEFAULT_VAULT_PATH)
+    if not vault_root.is_dir():
+        return JSONResponse({"error": f"vault path not found: {vault_root}"}, status_code=400)
+    manifest = manifest_mod.load_manifest(MANIFEST_PATH)
+    summary = crosslink_mod.apply_cross_links(vault_root, manifest)
+    return summary
 
 
 app.mount("/", StaticFiles(directory=Path(__file__).resolve().parent / "static", html=True), name="static")
