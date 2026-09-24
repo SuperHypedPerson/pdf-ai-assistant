@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -19,6 +20,7 @@ import openai
 
 from src import llm_client
 from src import manifest as manifest_mod
+from src import run_log
 from src import vault
 from src.quiz_generator import QuizParseError, generate_quiz
 from src.selection import confirm_text, parse_selection, render_tree
@@ -59,6 +61,8 @@ def main():
                          help="Question difficulty (default: medium)")
     parser.add_argument("--manifest", default=str(manifest_mod.DEFAULT_MANIFEST_PATH),
                          help="Path to the manifest JSON file (used only to show already-noted subchapters)")
+    parser.add_argument("--log", default=str(run_log.DEFAULT_LOG_PATH),
+                         help="Path to the run-summary log file")
     parser.add_argument("--lmstudio-url", default=None,
                          help=f"LM Studio base URL (default: {llm_client.DEFAULT_BASE_URL})")
     parser.add_argument("--model", default=None,
@@ -82,9 +86,28 @@ def main():
     print(render_tree(structure, processed))
 
     selected = prompt_for_selection(structure)
+    start_time = time.monotonic()
 
     client = llm_client.get_client(args.lmstudio_url, timeout=args.timeout)
     model = args.model or llm_client.get_model_name()
+
+    def finish(status: str, delivered: int = 0, error: str | None = None):
+        entry = run_log.log_run({
+            "script": "quiz",
+            "status": status,
+            "source_file": args.file,
+            "book_title": structure.title,
+            "subject": args.subject,
+            "difficulty": args.difficulty,
+            "selection": ", ".join(s.number for _, s in selected),
+            "num_requested": args.num_questions,
+            "num_delivered": delivered,
+            "model": model,
+            "vault": str(vault_root),
+            "duration_seconds": round(time.monotonic() - start_time, 1),
+            **({"error": error} if error else {}),
+        }, args.log)
+        run_log.print_summary(entry)
 
     print(f"\nGenerating a {args.num_questions}-question ({args.difficulty}) quiz via LM Studio ({model})...")
 
@@ -99,21 +122,27 @@ def main():
     except QuizParseError as e:
         print("FAILED (couldn't parse the model's response)")
         print(f"\n{e}")
+        finish("failed", error=str(e))
         sys.exit(1)
     except llm_client.EmptyResponseError as e:
         print("FAILED (empty response)")
         print(f"\n{e}")
+        finish("failed", error=str(e))
         sys.exit(1)
     except openai.APITimeoutError:
+        msg = f"LM Studio didn't respond within {args.timeout:.0f}s."
         print("FAILED (timed out)")
-        print(f"\nLM Studio didn't respond within {args.timeout:.0f}s.")
+        print(f"\n{msg}")
         print("Check the LM Studio server window/log — try --timeout 600 if it's just slow, "
               "or a smaller --num-questions/selection if the context is too large.")
+        finish("timed_out", error=msg)
         sys.exit(1)
     except openai.APIConnectionError:
+        msg = f"Couldn't reach LM Studio at {args.lmstudio_url or llm_client.DEFAULT_BASE_URL}."
         print("FAILED")
-        print(f"\nCouldn't reach LM Studio at {args.lmstudio_url or llm_client.DEFAULT_BASE_URL}.")
+        print(f"\n{msg}")
         print("Make sure the LM Studio local server is running and the model is loaded, then re-run.")
+        finish("connection_failed", error=msg)
         sys.exit(1)
 
     stem = f"{structure.title} Quiz {datetime.now().strftime('%Y-%m-%d %H%M')}"
@@ -122,6 +151,7 @@ def main():
     out_path.write_text(quiz_md, encoding="utf-8")
 
     print(f"\nQuiz written to {out_path}")
+    finish("completed", delivered)
 
 
 if __name__ == "__main__":

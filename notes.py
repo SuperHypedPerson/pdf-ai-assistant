@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -20,6 +21,7 @@ import openai
 
 from src import llm_client
 from src import manifest as manifest_mod
+from src import run_log
 from src import vault
 from src.note_generator import generate_subchapter_note, real_chapter_number
 from src.selection import confirm_text, parse_selection, render_tree
@@ -97,9 +99,11 @@ def main():
     parser.add_argument("--subject", help="Subject-area tag applied to generated notes (e.g. finance)")
     parser.add_argument("--vault", default=DEFAULT_VAULT_PATH, help="Path to your Obsidian vault")
     parser.add_argument("--all-chapters", action="store_true",
-                         help="Process every chapter without prompting (Stage 6 — not implemented yet)")
+                         help="Process every not-yet-processed subchapter in the book without prompting")
     parser.add_argument("--manifest", default=str(manifest_mod.DEFAULT_MANIFEST_PATH),
                          help="Path to the manifest JSON file")
+    parser.add_argument("--log", default=str(run_log.DEFAULT_LOG_PATH),
+                         help="Path to the run-summary log file")
     parser.add_argument("--lmstudio-url", default=None,
                          help=f"LM Studio base URL (default: {llm_client.DEFAULT_BASE_URL})")
     parser.add_argument("--model", default=None,
@@ -115,6 +119,7 @@ def main():
 
     vault_root = Path(args.vault)
     structure = extract_structure(args.file)
+    model = args.model or llm_client.get_model_name()
 
     manifest = manifest_mod.load_manifest(args.manifest)
     manifest_mod.ensure_book_entry(manifest, args.file, structure.title)
@@ -122,14 +127,40 @@ def main():
 
     print(render_tree(structure, processed))
 
-    if args.all_chapters:
-        print("\n--all-chapters is not implemented yet (Stage 6).")
-        return
+    start_time = time.monotonic()
 
-    selected = prompt_for_selection(structure)
+    def finish(status: str, generated: int, requested: int, skipped: int = 0, error: str | None = None):
+        entry = run_log.log_run({
+            "script": "notes",
+            "status": status,
+            "source_file": args.file,
+            "book_title": structure.title,
+            "subject": args.subject,
+            "num_requested": requested,
+            "num_generated": generated,
+            "num_skipped_already_processed": skipped,
+            "model": model,
+            "vault": str(vault_root),
+            "duration_seconds": round(time.monotonic() - start_time, 1),
+            **({"error": error} if error else {}),
+        }, args.log)
+        run_log.print_summary(entry)
+
+    if args.all_chapters:
+        full_selection = [(c, s) for c in structure.chapters for s in c.subchapters]
+        selected = [(c, s) for c, s in full_selection if s.number not in processed]
+        skipped = len(full_selection) - len(selected)
+        print(f"\n--all-chapters: {len(selected)} new subchapter(s) to process "
+              f"({skipped} already processed, skipped).")
+        if not selected:
+            print("Nothing new to process.")
+            finish("completed", 0, 0, skipped=skipped)
+            return
+    else:
+        selected = prompt_for_selection(structure)
+        skipped = 0
 
     client = llm_client.get_client(args.lmstudio_url, timeout=args.timeout)
-    model = args.model or llm_client.get_model_name()
 
     known = build_known_notes(manifest, args.file, vault_root, structure, selected)
     by_chapter = group_by_chapter(known)
@@ -151,19 +182,27 @@ def main():
         except llm_client.EmptyResponseError as e:
             print("FAILED (empty response)")
             print(f"\n{e}")
+            manifest_mod.save_manifest(manifest, args.manifest)
+            finish("failed", generated, len(selected), skipped=skipped, error=str(e))
             sys.exit(1)
         except openai.APITimeoutError:
+            msg = f"LM Studio didn't respond within {args.timeout:.0f}s."
             print("FAILED (timed out)")
-            print(f"\nLM Studio didn't respond within {args.timeout:.0f}s.")
+            print(f"\n{msg}")
             print("Check the LM Studio server window/log for this request — if it's still "
                   "generating, your hardware may just be slow for this model; re-run with "
                   "--timeout 600 (or higher). If the log shows it finished or errored, that's "
                   "a different problem — paste the log here.")
+            manifest_mod.save_manifest(manifest, args.manifest)
+            finish("timed_out", generated, len(selected), skipped=skipped, error=msg)
             sys.exit(1)
         except openai.APIConnectionError:
+            msg = f"Couldn't reach LM Studio at {args.lmstudio_url or llm_client.DEFAULT_BASE_URL}."
             print("FAILED")
-            print(f"\nCouldn't reach LM Studio at {args.lmstudio_url or llm_client.DEFAULT_BASE_URL}.")
+            print(f"\n{msg}")
             print("Make sure the LM Studio local server is running and the model is loaded, then re-run.")
+            manifest_mod.save_manifest(manifest, args.manifest)
+            finish("connection_failed", generated, len(selected), skipped=skipped, error=msg)
             sys.exit(1)
 
         out_path = known[subchapter.number][2]
@@ -182,6 +221,7 @@ def main():
     manifest_mod.save_manifest(manifest, args.manifest)
     print(f"\n{generated} note(s) written under {vault.book_folder(vault_root, structure.title)}/")
     print(f"Index updated: {index_out}")
+    finish("completed", generated, len(selected), skipped=skipped)
 
 
 if __name__ == "__main__":
