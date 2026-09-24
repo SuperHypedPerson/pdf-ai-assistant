@@ -51,6 +51,14 @@ def index_path(vault_root: Path, book_title: str) -> Path:
     return book_folder(vault_root, book_title) / "0 - Index.md"
 
 
+def quiz_folder(vault_root: Path, book_title: str) -> Path:
+    return vault_root / "Quizzes" / sanitize_filename(book_title)
+
+
+def quiz_path(vault_root: Path, book_title: str, stem: str) -> Path:
+    return quiz_folder(vault_root, book_title) / f"{sanitize_filename(stem)}.md"
+
+
 def wikilink(vault_root: Path, target_note_path: Path) -> str:
     """Full-path wikilink relative to the vault root, so it stays
     unambiguous even if another book has a same-named subchapter file."""
