@@ -35,6 +35,10 @@ OCR_TEXT_THRESHOLD_CHARS = 20
 # font size to be considered a heading candidate on size alone.
 HEADING_SIZE_RATIO = 1.15
 
+# An OCR'd "Chapter N ..." title longer than this is more likely a fused
+# header+body-text OCR artifact than a real (normally short) chapter title.
+OCR_TITLE_SUSPECT_LENGTH = 50
+
 CHAPTER_NUMBER_RE = re.compile(
     r"^(chapter|ch\.?|unit|part)\s+(\d+)\b[\s:.\-–—]*(.*)$", re.IGNORECASE
 )
@@ -359,12 +363,27 @@ def extract_heuristic(doc: fitz.Document, scanned_pages: list[int]) -> BookStruc
                 })
                 continue
             seen_chapter_numbers.add(cand["number"])
+            # Tesseract's plain image_to_string has no layout awareness, so a
+            # page's running-header text and the first line of body text
+            # directly below it sometimes get fused into one OCR'd line —
+            # "Chapter 4" + adjacent sentence fragment. A genuine chapter
+            # title is normally short; a long, sentence-shaped one is a sign
+            # this happened, so flag it rather than trust it silently.
+            ocr_title_suspect = cand["source"] == "ocr" and len(cand["title"]) > OCR_TITLE_SUSPECT_LENGTH
+            if ocr_title_suspect:
+                ambiguous.append({
+                    "reason": "OCR'd chapter title is unusually long, likely fused with adjacent body "
+                              "text rather than a real title (Tesseract has no page-layout awareness)",
+                    "title": cand["title"],
+                    "page": cand["page"],
+                })
             current_chapter = Chapter(
                 number=cand["number"],
                 title=cand["title"],
                 page_start=cand["page"],
                 page_end=cand["page"],  # corrected in second pass
-                confidence="high" if (cand.get("large") or cand.get("bold") or cand["source"] == "ocr") else "low",
+                confidence="low" if ocr_title_suspect else
+                    ("high" if (cand.get("large") or cand.get("bold") or cand["source"] == "ocr") else "low"),
             )
             chapters.append(current_chapter)
         else:  # subchapter
