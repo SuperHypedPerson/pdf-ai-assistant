@@ -10,30 +10,45 @@ Then open http://localhost:8420
 
 from __future__ import annotations
 
+import hashlib
+import json
+import queue as queue_mod
 import sys
 import uuid
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 from threading import Thread
 
 from fastapi import FastAPI, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from src import llm_client  # noqa: E402
 from src import manifest as manifest_mod  # noqa: E402
+from src import notes_pipeline  # noqa: E402
+from src import retry as retry_mod  # noqa: E402
+from src import vault  # noqa: E402
+from src.quiz_generator import QuizParseError, generate_quiz, max_tokens_for as quiz_max_tokens_for  # noqa: E402
 from src.structure_extractor import extract_structure  # noqa: E402
 
 UPLOAD_DIR = Path(__file__).resolve().parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 MANIFEST_PATH = REPO_ROOT / "manifest.json"
+DEFAULT_VAULT_PATH = r"C:\Users\Marcus\Desktop\Textbook Notes Summarizer"
 
 app = FastAPI(title="Textbook Notes + Quiz Generator")
 
 # In-memory job tracking — fine for a single-user local app.
 jobs: dict[str, dict] = {}
+# book_id -> parsed BookStructure (the dataclass, not its serialized dict) —
+# reused by generation so it doesn't have to re-parse (and, for a scanned
+# book, re-OCR the whole thing) after the picker already did it once.
+structure_cache: dict[str, object] = {}
 
 
 def _book_path(book_id: str) -> Path | None:
@@ -48,11 +63,33 @@ def _book_path(book_id: str) -> Path | None:
     return matches[0] if matches else None
 
 
+def _resolve_selection(structure, numbers: set[str]) -> list:
+    return [(c, s) for c in structure.chapters for s in c.subchapters if s.number in numbers]
+
+
+def _sse_stream(q: queue_mod.Queue):
+    while True:
+        item = q.get()
+        if item is None:
+            yield 'data: {"type": "stream_end"}\n\n'
+            break
+        yield f"data: {json.dumps(item)}\n\n"
+
+
+@app.get("/api/config")
+def get_config():
+    return {
+        "default_vault": DEFAULT_VAULT_PATH,
+        "default_model": llm_client.DEFAULT_MODEL,
+        "default_lmstudio_url": llm_client.DEFAULT_BASE_URL,
+        "default_timeout": llm_client.DEFAULT_TIMEOUT_SECONDS,
+    }
+
+
 @app.post("/api/upload")
 async def upload_pdf(file: UploadFile):
     contents = await file.read()
     # Stable id from content, so re-uploading the same PDF reuses its manifest state.
-    import hashlib
     content_hash = hashlib.sha1(contents).hexdigest()[:16]
     safe_name = "".join(c for c in file.filename if c.isalnum() or c in " ._-()") or "book.pdf"
     book_dir = UPLOAD_DIR / content_hash
@@ -75,9 +112,10 @@ def list_books():
     return books
 
 
-def _run_parse_job(job_id: str, pdf_path: Path):
+def _run_parse_job(job_id: str, book_id: str, pdf_path: Path):
     try:
         structure = extract_structure(pdf_path)
+        structure_cache[book_id] = structure
         jobs[job_id] = {"status": "done", "structure": asdict(structure)}
     except Exception as e:  # noqa: BLE001 — surface any failure to the UI rather than crash silently
         jobs[job_id] = {"status": "error", "error": str(e)}
@@ -91,7 +129,7 @@ def start_parse(book_id: str):
 
     job_id = str(uuid.uuid4())
     jobs[job_id] = {"status": "running"}
-    Thread(target=_run_parse_job, args=(job_id, pdf_path), daemon=True).start()
+    Thread(target=_run_parse_job, args=(job_id, book_id, pdf_path), daemon=True).start()
     return {"job_id": job_id}
 
 
@@ -111,6 +149,155 @@ def get_manifest(book_id: str):
     manifest = manifest_mod.load_manifest(MANIFEST_PATH)
     processed = manifest_mod.processed_subchapters(manifest, pdf_path)
     return {"processed": sorted(processed)}
+
+
+@app.get("/api/preview")
+def preview_file(path: str):
+    p = Path(path)
+    if not p.is_file():
+        return JSONResponse({"error": "file not found"}, status_code=404)
+    return {"content": p.read_text(encoding="utf-8")}
+
+
+# --------------------------------------------------------------------------
+# Notes generation
+# --------------------------------------------------------------------------
+
+class NotesGenerateRequest(BaseModel):
+    book_id: str
+    selection: list[str]
+    subject: str
+    vault: str | None = None
+    lmstudio_url: str | None = None
+    model: str | None = None
+    timeout: float | None = None
+    max_tokens: int | None = None
+
+
+@app.post("/api/notes/generate")
+def start_notes_generation(body: NotesGenerateRequest):
+    pdf_path = _book_path(body.book_id)
+    if pdf_path is None:
+        return JSONResponse({"error": "book not found"}, status_code=404)
+
+    structure = structure_cache.get(body.book_id) or extract_structure(pdf_path)
+    structure_cache[body.book_id] = structure
+    selected = _resolve_selection(structure, set(body.selection))
+    if not selected:
+        return JSONResponse({"error": "no matching subchapters in selection"}, status_code=400)
+
+    vault_root = Path(body.vault or DEFAULT_VAULT_PATH)
+    manifest = manifest_mod.load_manifest(MANIFEST_PATH)
+    manifest_mod.ensure_book_entry(manifest, pdf_path, structure.title)
+
+    client = llm_client.get_client(body.lmstudio_url, timeout=body.timeout or llm_client.DEFAULT_TIMEOUT_SECONDS)
+    model = body.model or llm_client.get_model_name()
+
+    job_id = str(uuid.uuid4())
+    q: queue_mod.Queue = queue_mod.Queue()
+    jobs[job_id] = {"status": "running", "queue": q}
+
+    def worker():
+        try:
+            for event in notes_pipeline.run_notes_generation(
+                str(pdf_path), structure, selected, body.subject, vault_root,
+                manifest, client, model, max_tokens=body.max_tokens, lmstudio_url=body.lmstudio_url,
+            ):
+                q.put(event)
+            manifest_mod.save_manifest(manifest, MANIFEST_PATH)
+        except Exception as e:  # noqa: BLE001
+            q.put({"type": "fatal_error", "error": str(e)})
+        finally:
+            q.put(None)
+
+    Thread(target=worker, daemon=True).start()
+    return {"job_id": job_id}
+
+
+@app.get("/api/notes/generate/stream/{job_id}")
+def stream_notes_generation(job_id: str):
+    job = jobs.get(job_id)
+    if job is None or "queue" not in job:
+        return JSONResponse({"error": "job not found"}, status_code=404)
+    return StreamingResponse(_sse_stream(job["queue"]), media_type="text/event-stream")
+
+
+# --------------------------------------------------------------------------
+# Quiz generation
+# --------------------------------------------------------------------------
+
+class QuizGenerateRequest(BaseModel):
+    book_id: str
+    selection: list[str]
+    subject: str
+    difficulty: str = "medium"
+    num_questions: int = 8
+    vault: str | None = None
+    lmstudio_url: str | None = None
+    model: str | None = None
+    timeout: float | None = None
+    max_tokens: int | None = None
+
+
+@app.post("/api/quiz/generate")
+def start_quiz_generation(body: QuizGenerateRequest):
+    pdf_path = _book_path(body.book_id)
+    if pdf_path is None:
+        return JSONResponse({"error": "book not found"}, status_code=404)
+
+    structure = structure_cache.get(body.book_id) or extract_structure(pdf_path)
+    structure_cache[body.book_id] = structure
+    selected = _resolve_selection(structure, set(body.selection))
+    if not selected:
+        return JSONResponse({"error": "no matching subchapters in selection"}, status_code=400)
+
+    vault_root = Path(body.vault or DEFAULT_VAULT_PATH)
+    client = llm_client.get_client(body.lmstudio_url, timeout=body.timeout or llm_client.DEFAULT_TIMEOUT_SECONDS)
+    model = body.model or llm_client.get_model_name()
+
+    job_id = str(uuid.uuid4())
+    q: queue_mod.Queue = queue_mod.Queue()
+    jobs[job_id] = {"status": "running", "queue": q}
+
+    def worker():
+        try:
+            q.put({"type": "generating"})
+            initial_tokens = body.max_tokens or quiz_max_tokens_for(body.num_questions)
+            stream = retry_mod.call_with_retry_stream(
+                lambda mt: generate_quiz(str(pdf_path), structure, selected, body.subject, body.difficulty,
+                                          body.num_questions, client, model, max_tokens=mt),
+                initial_tokens,
+            )
+            quiz_md, delivered = None, 0
+            for event in stream:
+                if event[0] == "retry":
+                    _, attempt, reason, next_tokens = event
+                    q.put({"type": "retry", "attempt": attempt, "reason": reason, "next_max_tokens": next_tokens})
+                elif event[0] == "success":
+                    quiz_md, delivered = event[1]
+
+            stem = f"{structure.title} Quiz {datetime.now().strftime('%Y-%m-%d %H%M')}"
+            out_path = vault.quiz_path(vault_root, structure.title, stem)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(quiz_md, encoding="utf-8")
+            q.put({"type": "done", "path": str(out_path), "delivered": delivered, "requested": body.num_questions})
+        except QuizParseError as e:
+            q.put({"type": "fatal_error", "error": str(e)})
+        except Exception as e:  # noqa: BLE001
+            q.put({"type": "fatal_error", "error": str(e)})
+        finally:
+            q.put(None)
+
+    Thread(target=worker, daemon=True).start()
+    return {"job_id": job_id}
+
+
+@app.get("/api/quiz/generate/stream/{job_id}")
+def stream_quiz_generation(job_id: str):
+    job = jobs.get(job_id)
+    if job is None or "queue" not in job:
+        return JSONResponse({"error": "job not found"}, status_code=404)
+    return StreamingResponse(_sse_stream(job["queue"]), media_type="text/event-stream")
 
 
 app.mount("/", StaticFiles(directory=Path(__file__).resolve().parent / "static", html=True), name="static")
