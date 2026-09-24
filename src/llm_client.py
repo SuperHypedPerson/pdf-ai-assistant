@@ -11,7 +11,7 @@ import openai
 from openai import OpenAI
 
 DEFAULT_BASE_URL = "http://localhost:1234/v1"
-DEFAULT_MODEL = "qwen3.5-9b"
+DEFAULT_MODEL = "qwen/qwen3.5-9b"
 DEFAULT_TIMEOUT_SECONDS = 180.0
 DEFAULT_MAX_TOKENS = 4096
 
