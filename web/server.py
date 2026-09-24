@@ -18,7 +18,7 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from threading import Thread
+from threading import Lock, Thread
 
 from fastapi import FastAPI, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -67,13 +67,49 @@ def _resolve_selection(structure, numbers: set[str]) -> list:
     return [(c, s) for c in structure.chapters for s in c.subchapters if s.number in numbers]
 
 
-def _sse_stream(q: queue_mod.Queue):
-    while True:
-        item = q.get()
-        if item is None:
-            yield 'data: {"type": "stream_end"}\n\n'
-            break
-        yield f"data: {json.dumps(item)}\n\n"
+class JobStream:
+    """Fan-out event log for one generation job: every event is kept, so a
+    browser tab that reconnects mid-job (a refresh, a dropped connection)
+    replays everything it missed before continuing live, instead of losing
+    progress it can't get back. Multiple simultaneous subscribers are each
+    given their own queue fed from the same published events."""
+
+    def __init__(self):
+        self.events: list = []
+        self.subscribers: list[queue_mod.Queue] = []
+        self.lock = Lock()
+
+    def publish(self, event) -> None:
+        with self.lock:
+            self.events.append(event)
+            for q in self.subscribers:
+                q.put(event)
+
+    def subscribe(self) -> queue_mod.Queue:
+        q: queue_mod.Queue = queue_mod.Queue()
+        with self.lock:
+            for event in self.events:
+                q.put(event)
+            self.subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: queue_mod.Queue) -> None:
+        with self.lock:
+            if q in self.subscribers:
+                self.subscribers.remove(q)
+
+
+def _sse_stream(job_stream: "JobStream"):
+    q = job_stream.subscribe()
+    try:
+        while True:
+            item = q.get()
+            if item is None:
+                yield 'data: {"type": "stream_end"}\n\n'
+                break
+            yield f"data: {json.dumps(item)}\n\n"
+    finally:
+        job_stream.unsubscribe(q)
 
 
 @app.get("/api/config")
@@ -194,8 +230,8 @@ def start_notes_generation(body: NotesGenerateRequest):
     model = body.model or llm_client.get_model_name()
 
     job_id = str(uuid.uuid4())
-    q: queue_mod.Queue = queue_mod.Queue()
-    jobs[job_id] = {"status": "running", "queue": q}
+    job_stream = JobStream()
+    jobs[job_id] = job_stream
 
     def worker():
         try:
@@ -203,12 +239,12 @@ def start_notes_generation(body: NotesGenerateRequest):
                 str(pdf_path), structure, selected, body.subject, vault_root,
                 manifest, client, model, max_tokens=body.max_tokens, lmstudio_url=body.lmstudio_url,
             ):
-                q.put(event)
+                job_stream.publish(event)
             manifest_mod.save_manifest(manifest, MANIFEST_PATH)
         except Exception as e:  # noqa: BLE001
-            q.put({"type": "fatal_error", "error": str(e)})
+            job_stream.publish({"type": "fatal_error", "error": str(e)})
         finally:
-            q.put(None)
+            job_stream.publish(None)
 
     Thread(target=worker, daemon=True).start()
     return {"job_id": job_id}
@@ -216,10 +252,10 @@ def start_notes_generation(body: NotesGenerateRequest):
 
 @app.get("/api/notes/generate/stream/{job_id}")
 def stream_notes_generation(job_id: str):
-    job = jobs.get(job_id)
-    if job is None or "queue" not in job:
+    job_stream = jobs.get(job_id)
+    if job_stream is None:
         return JSONResponse({"error": "job not found"}, status_code=404)
-    return StreamingResponse(_sse_stream(job["queue"]), media_type="text/event-stream")
+    return StreamingResponse(_sse_stream(job_stream), media_type="text/event-stream")
 
 
 # --------------------------------------------------------------------------
@@ -256,12 +292,12 @@ def start_quiz_generation(body: QuizGenerateRequest):
     model = body.model or llm_client.get_model_name()
 
     job_id = str(uuid.uuid4())
-    q: queue_mod.Queue = queue_mod.Queue()
-    jobs[job_id] = {"status": "running", "queue": q}
+    job_stream = JobStream()
+    jobs[job_id] = job_stream
 
     def worker():
         try:
-            q.put({"type": "generating"})
+            job_stream.publish({"type": "generating"})
             initial_tokens = body.max_tokens or quiz_max_tokens_for(body.num_questions)
             stream = retry_mod.call_with_retry_stream(
                 lambda mt: generate_quiz(str(pdf_path), structure, selected, body.subject, body.difficulty,
@@ -272,7 +308,8 @@ def start_quiz_generation(body: QuizGenerateRequest):
             for event in stream:
                 if event[0] == "retry":
                     _, attempt, reason, next_tokens = event
-                    q.put({"type": "retry", "attempt": attempt, "reason": reason, "next_max_tokens": next_tokens})
+                    job_stream.publish({"type": "retry", "attempt": attempt, "reason": reason,
+                                         "next_max_tokens": next_tokens})
                 elif event[0] == "success":
                     quiz_md, delivered = event[1]
 
@@ -280,13 +317,14 @@ def start_quiz_generation(body: QuizGenerateRequest):
             out_path = vault.quiz_path(vault_root, structure.title, stem)
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(quiz_md, encoding="utf-8")
-            q.put({"type": "done", "path": str(out_path), "delivered": delivered, "requested": body.num_questions})
+            job_stream.publish({"type": "done", "path": str(out_path), "delivered": delivered,
+                                 "requested": body.num_questions})
         except QuizParseError as e:
-            q.put({"type": "fatal_error", "error": str(e)})
+            job_stream.publish({"type": "fatal_error", "error": str(e)})
         except Exception as e:  # noqa: BLE001
-            q.put({"type": "fatal_error", "error": str(e)})
+            job_stream.publish({"type": "fatal_error", "error": str(e)})
         finally:
-            q.put(None)
+            job_stream.publish(None)
 
     Thread(target=worker, daemon=True).start()
     return {"job_id": job_id}
@@ -294,10 +332,10 @@ def start_quiz_generation(body: QuizGenerateRequest):
 
 @app.get("/api/quiz/generate/stream/{job_id}")
 def stream_quiz_generation(job_id: str):
-    job = jobs.get(job_id)
-    if job is None or "queue" not in job:
+    job_stream = jobs.get(job_id)
+    if job_stream is None:
         return JSONResponse({"error": "job not found"}, status_code=404)
-    return StreamingResponse(_sse_stream(job["queue"]), media_type="text/event-stream")
+    return StreamingResponse(_sse_stream(job_stream), media_type="text/event-stream")
 
 
 app.mount("/", StaticFiles(directory=Path(__file__).resolve().parent / "static", html=True), name="static")
