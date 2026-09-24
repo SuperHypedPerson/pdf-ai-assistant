@@ -15,10 +15,23 @@ from datetime import date
 from pathlib import Path
 
 from src.content_extractor import get_page_range_text
-from src.llm_client import generate as llm_generate
+from src.llm_client import DEFAULT_MAX_TOKENS, generate as llm_generate
 from src.structure_extractor import BookStructure, Chapter, SubChapter
 
 MIN_SOURCE_CHARS = 50
+TOKENS_PER_PAGE = 350  # extra token budget per source page, beyond the base
+MAX_TOKENS_CAP = 8192
+
+TRUNCATION_WARNING = (
+    "\n\n> [!warning] This note was cut off — the model hit its token limit before "
+    "finishing. Regenerate this subchapter with a higher --max-tokens, or split it "
+    "into a smaller selection."
+)
+
+
+def _max_tokens_for(subchapter: SubChapter) -> int:
+    page_count = max(1, subchapter.page_end - subchapter.page_start + 1)
+    return min(MAX_TOKENS_CAP, DEFAULT_MAX_TOKENS + TOKENS_PER_PAGE * page_count)
 
 SYSTEM_PROMPT = (
     "You are an expert study-notes writer. You distill textbook content into "
@@ -146,7 +159,7 @@ def render_note(book_title: str, chapter: Chapter, subchapter: SubChapter,
 
 def generate_subchapter_note(pdf_path: str | Path, structure: BookStructure,
                               chapter: Chapter, subchapter: SubChapter, subject: str,
-                              client, model: str) -> str:
+                              client, model: str, max_tokens: int | None = None) -> str:
     source_text = get_page_range_text(
         pdf_path, subchapter.page_start, subchapter.page_end, structure.scanned_pages,
     )
@@ -165,6 +178,9 @@ def generate_subchapter_note(pdf_path: str | Path, structure: BookStructure,
         return render_note(structure.title, chapter, subchapter, subject, body)
 
     prompt = build_prompt(structure.title, chapter, subchapter, subject, source_text)
-    raw = llm_generate(client, model, SYSTEM_PROMPT, prompt)
+    tokens = max_tokens or _max_tokens_for(subchapter)
+    raw, truncated = llm_generate(client, model, SYSTEM_PROMPT, prompt, max_tokens=tokens)
     body = _extract_body(raw)
+    if truncated:
+        body += TRUNCATION_WARNING
     return render_note(structure.title, chapter, subchapter, subject, body)

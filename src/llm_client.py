@@ -36,7 +36,11 @@ def get_model_name() -> str:
 
 
 def generate(client: OpenAI, model: str, system_prompt: str, user_prompt: str,
-             temperature: float = 0.3, max_tokens: int = DEFAULT_MAX_TOKENS) -> str:
+             temperature: float = 0.3, max_tokens: int = DEFAULT_MAX_TOKENS) -> tuple[str, bool]:
+    """Returns (content, truncated) — truncated is True if the model hit
+    max_tokens before finishing (finish_reason="length") but still produced
+    some content, so the caller can flag it rather than silently returning
+    a cut-off note."""
     # Qwen3's documented chat-template directive to skip its <think> pass
     # entirely — more reliable than the API-level enable_thinking flag,
     # which some backends (including LM Studio's) silently ignore.
@@ -70,4 +74,5 @@ def generate(client: OpenAI, model: str, system_prompt: str, user_prompt: str,
             "Increase max_tokens, or disable the model's reasoning/thinking mode in LM Studio."
         )
 
-    return content
+    truncated = choice.finish_reason == "length"
+    return content, truncated

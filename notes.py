@@ -60,6 +60,8 @@ def main():
                          help=f"Model name as loaded in LM Studio (default: {llm_client.DEFAULT_MODEL})")
     parser.add_argument("--timeout", type=float, default=llm_client.DEFAULT_TIMEOUT_SECONDS,
                          help=f"Seconds to wait for LM Studio per request (default: {llm_client.DEFAULT_TIMEOUT_SECONDS:.0f})")
+    parser.add_argument("--max-tokens", type=int, default=None,
+                         help="Fixed output token budget per note (default: auto-scaled by subchapter page count)")
     args = parser.parse_args()
 
     if not args.all_chapters and not args.subject:
@@ -91,6 +93,7 @@ def main():
         try:
             note_md = generate_subchapter_note(
                 args.file, structure, chapter, subchapter, args.subject, client, model,
+                max_tokens=args.max_tokens,
             )
         except llm_client.EmptyResponseError as e:
             print("FAILED (empty response)")
