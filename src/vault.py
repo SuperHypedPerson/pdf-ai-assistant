@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from src.note_generator import chapter_display_label, real_subchapter_number
+from src.note_generator import chapter_display_label, real_subchapter_number, subchapter_title_rest
 from src.structure_extractor import BookStructure, Chapter, SubChapter
 
 INVALID_CHARS_RE = re.compile(r'[\\/:*?"<>|]')
@@ -40,7 +40,7 @@ def chapter_folder(vault_root: Path, book_title: str, chapter: Chapter) -> Path:
 
 
 def subchapter_file_stem(chapter: Chapter, subchapter: SubChapter) -> str:
-    return sanitize_filename(f"{real_subchapter_number(chapter, subchapter)} {subchapter.title}")
+    return sanitize_filename(f"{real_subchapter_number(chapter, subchapter)} {subchapter_title_rest(subchapter)}")
 
 
 def note_path(vault_root: Path, book_title: str, chapter: Chapter, subchapter: SubChapter) -> Path:
@@ -95,7 +95,7 @@ def render_index(vault_root: Path, book_title: str, structure: BookStructure,
 
         for subchapter, path in sorted(entries, key=sort_key):
             link = wikilink(vault_root, path)
-            lines.append(f"- {link} — {subchapter.title}")
+            lines.append(f"- {link} — {subchapter_title_rest(subchapter)}")
         lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"

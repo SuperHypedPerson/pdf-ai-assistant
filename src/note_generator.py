@@ -74,31 +74,58 @@ Rules:
 
 BODY_SECTION_RE = re.compile(r"##\s*Summary.*", re.DOTALL | re.IGNORECASE)
 CHAPTER_LABEL_RE = re.compile(r"^chapter\s+(\d+)\s*[:\-–—]?\s*(.*)$", re.IGNORECASE)
+# Many embedded PDF outlines give chapter titles as a bare number, no
+# "Chapter" word at all — e.g. "1 The Basics", "2 User-Defined Types".
+# Safe to generalize (unlike a bare-letter pattern): real prose titles
+# essentially never start with a bare digit unless it IS a chapter number.
+BARE_NUMBERED_TITLE_RE = re.compile(r"^(\d{1,3})\.?\s+(\S.*)$")
+
+
+def _match_chapter_number(chapter: Chapter) -> re.Match | None:
+    title = chapter.title.strip()
+    return CHAPTER_LABEL_RE.match(title) or BARE_NUMBERED_TITLE_RE.match(title)
 
 
 def is_numbered_chapter(chapter: Chapter) -> bool:
-    """True if the title itself carries a real "CHAPTER N" designation.
-    Front/back matter (cover, contents, preface, bibliography, index, ...)
-    has no real chapter number at all."""
-    return bool(CHAPTER_LABEL_RE.match(chapter.title.strip()))
+    """True if the title itself carries a real chapter number — either
+    "CHAPTER N ..." or a bare "N Title" from an embedded outline. Front/back
+    matter (cover, contents, preface, bibliography, index, ...) has no real
+    chapter number at all."""
+    return _match_chapter_number(chapter) is not None
 
 
 def real_chapter_number(chapter: Chapter) -> str:
     """The book's own chapter number (e.g. from a title like "CHAPTER 4
-    Mean Reversion..."), or the picker's positional index as a display
-    fallback for front/back matter. NOT safe as a grouping/dict key on its
-    own — a front-matter chapter's positional index can coincide with a
-    real chapter's number (e.g. both "1"). Use chapter_group_key for that."""
-    match = CHAPTER_LABEL_RE.match(chapter.title.strip())
+    Mean Reversion..." or "4 Mean Reversion..."), or the picker's positional
+    index as a display fallback for front/back matter. NOT safe as a
+    grouping/dict key on its own — a front-matter chapter's positional index
+    can coincide with a real chapter's number (e.g. both "1"). Use
+    chapter_group_key for that."""
+    match = _match_chapter_number(chapter)
     return match.group(1) if match else chapter.number
 
 
 def chapter_title_rest(chapter: Chapter) -> str:
-    """Chapter title with a leading "CHAPTER N" prefix stripped, if present."""
-    match = CHAPTER_LABEL_RE.match(chapter.title.strip())
+    """Chapter title with a leading chapter-number prefix stripped, if present."""
+    match = _match_chapter_number(chapter)
     if match:
         return match.group(2).strip() or chapter.title
     return chapter.title
+
+
+# Some embedded outlines give subchapter titles as e.g. "1.1 Introduction",
+# redundantly embedding the same numbering we compute separately — left
+# alone, that doubles up everywhere the subchapter is displayed or named.
+SUBCHAPTER_TITLE_PREFIX_RE = re.compile(r"^\d{1,3}\.\d{1,3}(?:\.\d{1,3})?\.?\s+(\S.*)$")
+
+
+def subchapter_title_rest(subchapter: SubChapter) -> str:
+    """Subchapter title with a leading "N.M " (or "N.M.K ") numeric prefix
+    stripped, if the title embeds its own numbering."""
+    match = SUBCHAPTER_TITLE_PREFIX_RE.match(subchapter.title.strip())
+    if match:
+        return match.group(1).strip() or subchapter.title
+    return subchapter.title
 
 
 def chapter_group_key(chapter: Chapter) -> str:
@@ -137,8 +164,8 @@ def _chapter_label(chapter: Chapter) -> str:
 
 def _subchapter_label(chapter: Chapter, subchapter: SubChapter) -> str:
     if is_numbered_chapter(chapter):
-        return f"{real_subchapter_number(chapter, subchapter)} — {subchapter.title}"
-    return subchapter.title
+        return f"{real_subchapter_number(chapter, subchapter)} — {subchapter_title_rest(subchapter)}"
+    return subchapter_title_rest(subchapter)
 
 
 def _yaml_str(value: str) -> str:
@@ -158,7 +185,7 @@ def build_prompt(book_title: str, chapter: Chapter, subchapter: SubChapter,
         chapter_number=chapter.number,
         chapter_title=chapter.title,
         sub_number=subchapter.number,
-        sub_title=subchapter.title,
+        sub_title=subchapter_title_rest(subchapter),
         subject=subject,
         page_start=subchapter.page_start,
         page_end=subchapter.page_end,
@@ -192,7 +219,7 @@ def render_note(book_title: str, chapter: Chapter, subchapter: SubChapter,
         "<!-- no other notes in this chapter yet -->"
     return (
         f"{frontmatter}\n\n"
-        f"# {subchapter.title}\n\n"
+        f"# {subchapter_title_rest(subchapter)}\n\n"
         f"{body}\n\n"
         f"## Related\n"
         f"{related_body}\n"

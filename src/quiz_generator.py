@@ -15,7 +15,7 @@ from pathlib import Path
 
 from src.content_extractor import get_page_range_text
 from src.llm_client import generate as llm_generate
-from src.note_generator import real_subchapter_number
+from src.note_generator import real_subchapter_number, subchapter_title_rest
 from src.structure_extractor import BookStructure, Chapter, SubChapter
 
 BASE_MAX_TOKENS = 4096  # generous headroom for a reasoning model's "thinking" pass
@@ -89,7 +89,7 @@ def build_source_text(pdf_path: str | Path, structure: BookStructure,
     blocks = []
     for chapter, subchapter in selected:
         text = get_page_range_text(pdf_path, subchapter.page_start, subchapter.page_end, structure.scanned_pages)
-        label = f"{real_subchapter_number(chapter, subchapter)} — {subchapter.title} " \
+        label = f"{real_subchapter_number(chapter, subchapter)} — {subchapter_title_rest(subchapter)} " \
                 f"(pages {subchapter.page_start}-{subchapter.page_end})"
         blocks.append(f"### {label}\n{text}")
     return "\n\n".join(blocks)

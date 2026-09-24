@@ -30,6 +30,7 @@ from src.note_generator import (
     generate_subchapter_note,
     is_numbered_chapter,
     max_tokens_for,
+    subchapter_title_rest,
 )
 from src.selection import confirm_text, parse_selection, render_tree
 from src.structure_extractor import extract_structure
@@ -202,7 +203,7 @@ def main():
             current_chapter_num = group_key
             print(f"\n=== {chapter_display_label(chapter)} ===")
 
-        print(f"  {subchapter.number} {subchapter.title} ...", end=" ", flush=True)
+        print(f"  {subchapter.number} {subchapter_title_rest(subchapter)} ...", end=" ", flush=True)
 
         siblings = by_chapter[group_key]
         related_links = [vault.wikilink(vault_root, path) for sib, path in siblings if sib.number != subchapter.number]

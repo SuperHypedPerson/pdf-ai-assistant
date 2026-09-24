@@ -13,6 +13,8 @@ Core parsing is a pure function (no input()/print()) so a future UI layer
 
 from __future__ import annotations
 
+from src.note_generator import subchapter_title_rest
+
 from src.structure_extractor import BookStructure, Chapter, SubChapter
 
 Selection = list[tuple[Chapter, SubChapter]]
@@ -120,7 +122,7 @@ def render_tree(structure: BookStructure, processed: set[str]) -> str:
         for sub in chap.subchapters:
             mark = "[x]" if sub.number in processed else "[ ]"
             sconf = "" if sub.confidence == "high" else "  [low-confidence]"
-            lines.append(f"    {mark} {sub.number} {sub.title}  (p.{sub.page_start}-{sub.page_end}){sconf}")
+            lines.append(f"    {mark} {sub.number} {subchapter_title_rest(sub)}  (p.{sub.page_start}-{sub.page_end}){sconf}")
     return "\n".join(lines)
 
 
@@ -129,5 +131,5 @@ def confirm_text(selected: Selection) -> str:
         return "You selected: nothing"
     lines = ["You selected:"]
     for chap, sub in selected:
-        lines.append(f"  {sub.number} {sub.title}  (p.{sub.page_start}-{sub.page_end})  [Ch.{chap.number} {chap.title}]")
+        lines.append(f"  {sub.number} {subchapter_title_rest(sub)}  (p.{sub.page_start}-{sub.page_end})  [Ch.{chap.number} {chap.title}]")
     return "\n".join(lines)
