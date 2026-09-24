@@ -89,10 +89,13 @@ def main():
     print(f"\nGenerating a {args.num_questions}-question ({args.difficulty}) quiz via LM Studio ({model})...")
 
     try:
-        quiz_md = generate_quiz(
+        quiz_md, delivered = generate_quiz(
             args.file, structure, selected, args.subject, args.difficulty,
             args.num_questions, client, model, max_tokens=args.max_tokens,
         )
+        if delivered < args.num_questions:
+            print(f"\nNote: {delivered}/{args.num_questions} questions delivered — "
+                  f"the model returned some in an unexpected format; see the warning in the quiz file.")
     except QuizParseError as e:
         print("FAILED (couldn't parse the model's response)")
         print(f"\n{e}")

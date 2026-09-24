@@ -146,7 +146,8 @@ def _parse_questions(raw_response: str) -> list[dict]:
     if not valid:
         raise QuizParseError(f"No valid questions survived validation. Raw response: {raw_response[:300]!r}")
 
-    return valid
+    dropped = len(questions) - len(valid)
+    return valid, dropped
 
 
 def render_quiz(book_title: str, subject: str, difficulty: str,
@@ -189,14 +190,16 @@ def render_quiz(book_title: str, subject: str, difficulty: str,
 
 def generate_quiz(pdf_path: str | Path, structure: BookStructure,
                    selected: list[tuple[Chapter, SubChapter]], subject: str, difficulty: str,
-                   num_questions: int, client, model: str, max_tokens: int | None = None) -> str:
+                   num_questions: int, client, model: str,
+                   max_tokens: int | None = None) -> tuple[str, int]:
+    """Returns (quiz_markdown, num_questions_delivered)."""
     num_mcq, num_short = question_mix(num_questions)
     source_text = build_source_text(pdf_path, structure, selected)
     prompt = build_prompt(structure.title, subject, difficulty, num_mcq, num_short, source_text)
 
     tokens = max_tokens or _max_tokens_for(num_questions)
     raw, truncated = llm_generate(client, model, SYSTEM_PROMPT, prompt, max_tokens=tokens)
-    questions = _parse_questions(raw)
+    questions, dropped = _parse_questions(raw)
 
     quiz_md = render_quiz(structure.title, subject, difficulty, selected, questions)
     if truncated:
@@ -204,4 +207,9 @@ def generate_quiz(pdf_path: str | Path, structure: BookStructure,
             "\n> [!warning] This quiz may be incomplete — the model hit its token limit "
             "while generating. Consider a smaller --num-questions or a shorter selection.\n"
         )
-    return quiz_md
+    if dropped:
+        quiz_md += (
+            f"\n> [!warning] {dropped} question(s) the model returned didn't match the expected "
+            f"format and were dropped — {len(questions)} delivered out of {num_questions} requested.\n"
+        )
+    return quiz_md, len(questions)
