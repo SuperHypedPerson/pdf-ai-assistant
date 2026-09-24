@@ -33,6 +33,7 @@ from src import manifest as manifest_mod  # noqa: E402
 from src import notes_pipeline  # noqa: E402
 from src import retry as retry_mod  # noqa: E402
 from src import vault  # noqa: E402
+from src.note_generator import is_numbered_chapter  # noqa: E402
 from src.quiz_generator import QuizParseError, generate_quiz, max_tokens_for as quiz_max_tokens_for  # noqa: E402
 from src.structure_extractor import extract_structure  # noqa: E402
 
@@ -152,7 +153,14 @@ def _run_parse_job(job_id: str, book_id: str, pdf_path: Path):
     try:
         structure = extract_structure(pdf_path)
         structure_cache[book_id] = structure
-        jobs[job_id] = {"status": "done", "structure": asdict(structure)}
+        structure_dict = asdict(structure)
+        # Flag which chapters are the book's real numbered content vs.
+        # front/back matter, so the picker can offer a --all-chapters-style
+        # "select all real chapters" shortcut without re-deriving the
+        # is_numbered_chapter() regex logic client-side in JS.
+        for chap_dict, chap_obj in zip(structure_dict["chapters"], structure.chapters):
+            chap_dict["is_numbered"] = is_numbered_chapter(chap_obj)
+        jobs[job_id] = {"status": "done", "structure": structure_dict}
     except Exception as e:  # noqa: BLE001 — surface any failure to the UI rather than crash silently
         jobs[job_id] = {"status": "error", "error": str(e)}
 
@@ -297,7 +305,8 @@ def start_quiz_generation(body: QuizGenerateRequest):
 
     def worker():
         try:
-            job_stream.publish({"type": "generating"})
+            job_stream.publish({"type": "generating", "num_questions": body.num_questions,
+                                 "difficulty": body.difficulty})
             initial_tokens = body.max_tokens or quiz_max_tokens_for(body.num_questions)
             stream = retry_mod.call_with_retry_stream(
                 lambda mt: generate_quiz(str(pdf_path), structure, selected, body.subject, body.difficulty,

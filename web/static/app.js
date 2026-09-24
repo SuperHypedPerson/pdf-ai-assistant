@@ -180,6 +180,7 @@ function renderStructure() {
   for (const chapter of s.chapters) {
     const chapterEl = document.createElement("div");
     chapterEl.className = "chapter";
+    chapterEl.dataset.numbered = chapter.is_numbered ? "1" : "0";
 
     const allSubNums = chapter.subchapters.map((sc) => sc.number);
     const allProcessed = allSubNums.length && allSubNums.every((n) => state.processed.has(n));
@@ -271,6 +272,20 @@ el("select-all").addEventListener("click", () => {
     state.selected.add(cb.dataset.num);
   });
   document.querySelectorAll(".chapter-checkbox").forEach((cb) => { cb.checked = true; cb.indeterminate = false; });
+  updateSelectionBar();
+});
+
+el("select-real-chapters").addEventListener("click", () => {
+  state.selected.clear();
+  document.querySelectorAll(".chapter").forEach((chapterEl) => {
+    const numbered = chapterEl.dataset.numbered === "1";
+    chapterEl.querySelectorAll(".sub-checkbox").forEach((cb) => {
+      cb.checked = numbered;
+      if (numbered) state.selected.add(cb.dataset.num);
+    });
+    const nums = [...chapterEl.querySelectorAll(".sub-checkbox")].map((cb) => cb.dataset.num);
+    syncChapterCheckbox(chapterEl, nums);
+  });
   updateSelectionBar();
 });
 
@@ -374,6 +389,22 @@ el("start-generate-btn").addEventListener("click", async () => {
   }
 });
 
+// ---------- Active-job persistence (survives a page refresh) ----------
+
+const ACTIVE_JOB_KEY = "activeGenerationJob";
+
+function saveActiveJob(jobId, mode) {
+  localStorage.setItem(ACTIVE_JOB_KEY, JSON.stringify({ jobId, mode, bookId: state.bookId, filename: state.filename }));
+}
+
+function clearActiveJob() {
+  localStorage.removeItem(ACTIVE_JOB_KEY);
+}
+
+function loadActiveJob() {
+  try { return JSON.parse(localStorage.getItem(ACTIVE_JOB_KEY) || "null"); } catch { return null; }
+}
+
 // ---------- Notes generation (SSE) ----------
 
 async function runNotesGeneration(settings) {
@@ -394,15 +425,21 @@ async function runNotesGeneration(settings) {
     return;
   }
   const { job_id } = await res.json();
+  saveActiveJob(job_id, "notes");
+  el("progress-stats").textContent = `${settings.selection.length} subchapter(s)`;
+  attachNotesStream(job_id);
+}
 
+function attachNotesStream(job_id) {
   const log = el("progress-log");
   let currentChapterEl = null;
   let currentRow = null;
   let generated = 0;
-  let failedList = [];
+  let sawAnyEvent = false;
 
   const src = new EventSource(`/api/notes/generate/stream/${job_id}`);
   src.onmessage = (e) => {
+    sawAnyEvent = true;
     const event = JSON.parse(e.data);
     switch (event.type) {
       case "chapter_start": {
@@ -469,13 +506,22 @@ async function runNotesGeneration(settings) {
       }
       case "stream_end": {
         src.close();
+        clearActiveJob();
         el("back-to-start").classList.remove("hidden");
         break;
       }
     }
   };
   src.onerror = () => {
-    src.close();
+    if (!sawAnyEvent) {
+      // The job doesn't exist server-side (likely the server restarted) —
+      // give up instead of letting the browser retry a dead job forever.
+      src.close();
+      clearActiveJob();
+      showGenerationFatalError("Couldn't find that generation job (the server may have restarted). Start a new one below.");
+    }
+    // Otherwise leave it: EventSource auto-retries, and the server replays
+    // everything published so far, so a transient drop recovers on its own.
   };
 }
 
@@ -512,18 +558,29 @@ async function runQuizGeneration(settings) {
     return;
   }
   const { job_id } = await res.json();
+  saveActiveJob(job_id, "quiz");
+  attachQuizStream(job_id);
+}
 
+function attachQuizStream(job_id) {
   const log = el("progress-log");
-  const row = document.createElement("div");
-  row.className = "progress-row";
-  row.innerHTML = `<span class="status-icon working"></span><span class="title">${settings.num_questions}-question ${settings.difficulty} quiz</span><span class="detail"></span>`;
-  log.appendChild(row);
+  let row = null;
+  let sawAnyEvent = false;
 
   const src = new EventSource(`/api/quiz/generate/stream/${job_id}`);
   src.onmessage = (e) => {
+    sawAnyEvent = true;
     const event = JSON.parse(e.data);
     switch (event.type) {
+      case "generating": {
+        row = document.createElement("div");
+        row.className = "progress-row";
+        row.innerHTML = `<span class="status-icon working"></span><span class="title">${event.num_questions}-question ${event.difficulty} quiz</span><span class="detail"></span>`;
+        log.appendChild(row);
+        break;
+      }
       case "retry": {
+        if (!row) break;
         const icon = row.querySelector(".status-icon");
         icon.className = "status-icon retry";
         icon.textContent = "↻";
@@ -552,13 +609,18 @@ async function runQuizGeneration(settings) {
       }
       case "stream_end": {
         src.close();
+        clearActiveJob();
         el("back-to-start").classList.remove("hidden");
         break;
       }
     }
   };
   src.onerror = () => {
-    src.close();
+    if (!sawAnyEvent) {
+      src.close();
+      clearActiveJob();
+      showGenerationFatalError("Couldn't find that generation job (the server may have restarted). Start a new one below.");
+    }
   };
 }
 
@@ -595,4 +657,31 @@ el("preview-modal").addEventListener("click", (e) => {
   if (e.target.id === "preview-modal") el("preview-modal").classList.add("hidden");
 });
 
-renderRecentBooks();
+// ---------- Reconnect to a job still running after a page refresh ----------
+
+function tryReconnectActiveJob() {
+  const active = loadActiveJob();
+  if (!active) return false;
+
+  state.bookId = active.bookId;
+  state.filename = active.filename;
+
+  el("upload-section").classList.add("hidden");
+  el("progress-section").classList.remove("hidden");
+  el("progress-title").textContent = active.mode === "quiz" ? "Generating quiz…" : "Generating notes…";
+  el("progress-stats").textContent = "reconnected";
+  el("progress-log").innerHTML = "";
+  el("progress-summary").classList.add("hidden");
+  el("back-to-start").classList.add("hidden");
+
+  if (active.mode === "quiz") {
+    attachQuizStream(active.jobId);
+  } else {
+    attachNotesStream(active.jobId);
+  }
+  return true;
+}
+
+if (!tryReconnectActiveJob()) {
+  renderRecentBooks();
+}
