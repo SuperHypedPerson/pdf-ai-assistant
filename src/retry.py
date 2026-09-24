@@ -10,7 +10,7 @@ before giving up.
 
 from __future__ import annotations
 
-from typing import Callable, TypeVar
+from typing import Callable, Iterator, TypeVar
 
 import openai
 
@@ -23,6 +23,33 @@ MAX_ESCALATED_TOKENS = 24576
 T = TypeVar("T")
 
 
+def call_with_retry_stream(fn: Callable[[int], T], initial_max_tokens: int) -> Iterator[tuple]:
+    """Generator core: yields ("retry", attempt, reason, next_max_tokens) as
+    each retry happens, then ("success", result) once fn succeeds. Raises
+    the last error if every attempt is exhausted. A generator (rather than
+    a callback) so a caller mid-stream — like the web pipeline — can
+    surface each retry as it happens instead of only after the fact."""
+    max_tokens = initial_max_tokens
+    last_error: Exception | None = None
+
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            result = fn(max_tokens)
+            yield ("success", result)
+            return
+        except EmptyResponseError as e:
+            last_error = e
+            if attempt < MAX_ATTEMPTS:
+                max_tokens = min(int(max_tokens * TOKEN_ESCALATION_FACTOR), MAX_ESCALATED_TOKENS)
+                yield ("retry", attempt, "token_limit", max_tokens)
+        except openai.APITimeoutError as e:
+            last_error = e
+            if attempt < MAX_ATTEMPTS:
+                yield ("retry", attempt, "timeout", max_tokens)
+
+    raise last_error
+
+
 def call_with_retry(fn: Callable[[int], T], initial_max_tokens: int,
                      on_retry: Callable[[int, str, int], None] | None = None) -> T:
     """fn(max_tokens) -> result. Retries up to MAX_ATTEMPTS times total: on
@@ -31,22 +58,8 @@ def call_with_retry(fn: Callable[[int], T], initial_max_tokens: int,
     slowness, not a size problem). Re-raises the last error if every
     attempt fails. on_retry(attempt, reason, next_max_tokens) is called
     before each retry, reason being "token_limit" or "timeout"."""
-    max_tokens = initial_max_tokens
-    last_error: Exception | None = None
-
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        try:
-            return fn(max_tokens)
-        except EmptyResponseError as e:
-            last_error = e
-            if attempt < MAX_ATTEMPTS:
-                max_tokens = min(int(max_tokens * TOKEN_ESCALATION_FACTOR), MAX_ESCALATED_TOKENS)
-                if on_retry:
-                    on_retry(attempt, "token_limit", max_tokens)
-        except openai.APITimeoutError as e:
-            last_error = e
-            if attempt < MAX_ATTEMPTS:
-                if on_retry:
-                    on_retry(attempt, "timeout", max_tokens)
-
-    raise last_error
+    for event in call_with_retry_stream(fn, initial_max_tokens):
+        if event[0] == "retry" and on_retry:
+            on_retry(event[1], event[2], event[3])
+        elif event[0] == "success":
+            return event[1]
