@@ -90,6 +90,10 @@ def main():
             note_md = generate_subchapter_note(
                 args.file, structure, chapter, subchapter, args.subject, client, model,
             )
+        except llm_client.EmptyResponseError as e:
+            print("FAILED (empty response)")
+            print(f"\n{e}")
+            sys.exit(1)
         except openai.APITimeoutError:
             print("FAILED (timed out)")
             print(f"\nLM Studio didn't respond within {llm_client.DEFAULT_TIMEOUT_SECONDS:.0f}s.")
