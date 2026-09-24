@@ -59,6 +59,18 @@ def quiz_path(vault_root: Path, book_title: str, stem: str) -> Path:
     return quiz_folder(vault_root, book_title) / f"{sanitize_filename(stem)}.md"
 
 
+def flashcards_book_folder(vault_root: Path, book_title: str) -> Path:
+    return vault_root / "Flashcards" / sanitize_filename(book_title)
+
+
+def flashcards_chapter_folder(vault_root: Path, book_title: str, chapter: Chapter) -> Path:
+    return flashcards_book_folder(vault_root, book_title) / chapter_folder_name(chapter)
+
+
+def flashcards_path(vault_root: Path, book_title: str, chapter: Chapter, subchapter: SubChapter) -> Path:
+    return flashcards_chapter_folder(vault_root, book_title, chapter) / f"{subchapter_file_stem(chapter, subchapter)}.md"
+
+
 def wikilink(vault_root: Path, target_note_path: Path) -> str:
     """Full-path wikilink relative to the vault root, so it stays
     unambiguous even if another book has a same-named subchapter file."""

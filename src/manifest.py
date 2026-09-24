@@ -71,6 +71,7 @@ def ensure_book_entry(manifest: dict, pdf_path: str | Path, title: str) -> dict:
             "first_parsed": datetime.now(timezone.utc).isoformat(),
             "subchapters": {},  # "3.2" -> {status, note_path, updated}
         }
+    manifest["books"][bid].setdefault("flashcards", {})  # "3.2" -> {status, path, updated}
     return manifest["books"][bid]
 
 
@@ -97,5 +98,33 @@ def mark_processed(manifest: dict, pdf_path: str | Path, sub_number: str, note_p
     book["subchapters"][sub_number] = {
         "status": "processed",
         "note_path": note_path,
+        "updated": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def processed_flashcards(manifest: dict, pdf_path: str | Path) -> set[str]:
+    bid = book_id(pdf_path)
+    book = manifest["books"].get(bid)
+    if not book:
+        return set()
+    flashcards = book.get("flashcards", {})
+    return {num for num, info in flashcards.items() if info.get("status") == "processed"}
+
+
+def existing_flashcards_path(manifest: dict, pdf_path: str | Path, sub_number: str) -> str | None:
+    bid = book_id(pdf_path)
+    book = manifest["books"].get(bid)
+    if not book:
+        return None
+    entry = book.get("flashcards", {}).get(sub_number)
+    return entry.get("path") if entry else None
+
+
+def mark_flashcards_processed(manifest: dict, pdf_path: str | Path, sub_number: str, path: str) -> None:
+    bid = book_id(pdf_path)
+    book = manifest["books"][bid]
+    book.setdefault("flashcards", {})[sub_number] = {
+        "status": "processed",
+        "path": path,
         "updated": datetime.now(timezone.utc).isoformat(),
     }
