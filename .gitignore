@@ -4,3 +4,4 @@ __pycache__/
 *.structure.json
 venv/
 .venv/
+manifest.json
