@@ -250,6 +250,12 @@ def start_notes_generation(body: NotesGenerateRequest):
                 manifest, client, model, max_tokens=body.max_tokens, lmstudio_url=body.lmstudio_url,
             ):
                 job_stream.publish(event)
+                if event["type"] == "subchapter_done":
+                    # Save immediately rather than waiting for the whole run
+                    # to finish, so stopping the server mid-run doesn't lose
+                    # track of subchapters already written to disk (which
+                    # would otherwise get silently regenerated next time).
+                    manifest_mod.save_manifest(manifest, MANIFEST_PATH)
             manifest_mod.save_manifest(manifest, MANIFEST_PATH)
         except Exception as e:  # noqa: BLE001
             job_stream.publish({"type": "fatal_error", "error": str(e)})

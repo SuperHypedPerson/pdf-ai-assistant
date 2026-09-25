@@ -154,6 +154,11 @@ def main():
                   f"— retrying with max_tokens={event['next_max_tokens']}...", end=" ", flush=True)
         elif etype == "subchapter_done":
             print(f"-> {event['path']}")
+            # Save immediately rather than waiting for the whole run to
+            # finish, so a kill mid-run doesn't lose track of subchapters
+            # already written to disk (which would otherwise get silently
+            # regenerated and overwritten on the next run).
+            manifest_mod.save_manifest(manifest, args.manifest)
         elif etype == "subchapter_failed":
             reason = "empty response" if event["reason"] == "empty_response" else "timed out"
             print(f"FAILED ({reason}, exhausted retries) — skipping, will retry on next run")
