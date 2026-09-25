@@ -239,6 +239,24 @@ def _median_body_size(doc: fitz.Document, scanned_pages: set[int]) -> float:
     return statistics.median(sizes) if sizes else 10.0
 
 
+# Minimum fraction of a candidate title's characters that must be alphabetic
+# for it to be trusted as a real heading rather than an equation number that
+# happens to be numbered like a section (e.g. Hull's "(5.1)" equations vs.
+# "5.1 Black-Scholes-Merton"). Equation lines are dominated by digits,
+# symbols and single-letter variables, so this cheaply tells them apart
+# without needing page position or layout info.
+TITLE_MIN_ALPHA_RATIO = 0.6
+TITLE_MIN_ALPHA_CHARS = 3
+
+
+def _looks_like_prose_title(title: str) -> bool:
+    title = title.strip()
+    alpha_chars = sum(c.isalpha() for c in title)
+    if alpha_chars < TITLE_MIN_ALPHA_CHARS:
+        return False
+    return (alpha_chars / len(title)) >= TITLE_MIN_ALPHA_RATIO
+
+
 def _classify_heading_text(text: str) -> Optional[tuple[str, str, str]]:
     """Returns (kind, number, title) where kind is 'chapter' or 'subchapter', or None."""
     text = text.strip()
@@ -247,15 +265,24 @@ def _classify_heading_text(text: str) -> Optional[tuple[str, str, str]]:
 
     m = DEEPER_RE.match(text)
     if m:
-        return ("deeper", f"{m.group(1)}.{m.group(2)}.{m.group(3)}", m.group(4).strip())
+        title = m.group(4).strip()
+        if not _looks_like_prose_title(title):
+            return None
+        return ("deeper", f"{m.group(1)}.{m.group(2)}.{m.group(3)}", title)
 
     m = APPENDIX_SUBCHAPTER_RE.match(text)
     if m:
-        return ("subchapter", f"{m.group(1).upper()}.{m.group(2)}", m.group(3).strip())
+        title = m.group(3).strip()
+        if not _looks_like_prose_title(title):
+            return None
+        return ("subchapter", f"{m.group(1).upper()}.{m.group(2)}", title)
 
     m = SUBCHAPTER_RE.match(text)
     if m:
-        return ("subchapter", f"{m.group(1)}.{m.group(2)}", m.group(3).strip())
+        title = m.group(3).strip()
+        if not _looks_like_prose_title(title):
+            return None
+        return ("subchapter", f"{m.group(1)}.{m.group(2)}", title)
 
     m = APPENDIX_CHAPTER_RE.match(text)
     if m:
@@ -267,7 +294,10 @@ def _classify_heading_text(text: str) -> Optional[tuple[str, str, str]]:
 
     m = BARE_CHAPTER_RE.match(text)
     if m:
-        return ("chapter", m.group(1), m.group(2).strip())
+        title = m.group(2).strip()
+        if not _looks_like_prose_title(title):
+            return None
+        return ("chapter", m.group(1), title)
 
     return None
 
