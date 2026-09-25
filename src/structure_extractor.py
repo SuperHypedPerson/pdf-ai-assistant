@@ -126,32 +126,23 @@ def extract_from_outline(doc: fitz.Document) -> Optional[BookStructure]:
     if not toc:
         return None
 
-    # Need at least a two-level hierarchy to be useful; a flat single-level
-    # TOC (all level 1) is treated as chapters-only with synthetic subchapters.
-    levels_present = sorted(set(entry[0] for entry in toc))
+    # A flat single-level TOC (all level 1) is treated as chapters-only with
+    # synthetic subchapters. Any deeper level (3, 4, ...) is NOT dropped: the
+    # Chapter/SubChapter model only has two tiers, so every entry below the
+    # chapter level is kept as its own subchapter in document order, just
+    # without representing further sub-nesting among themselves. This keeps
+    # every outline entry addressable (and note-able) instead of silently
+    # folding hundreds of real sections into their parent's page range.
     total_pages = doc.page_count
-    chapter_level = levels_present[0]
-    sub_level = levels_present[1] if len(levels_present) > 1 else None
+    chapter_level = sorted(set(entry[0] for entry in toc))[0]
 
     ambiguous: list[dict] = []
     chapters: list[Chapter] = []
 
-    # Filter to top-two levels only; deeper levels are folded/flagged.
-    entries = [e for e in toc if e[0] in (chapter_level, sub_level)] if sub_level else \
-        [e for e in toc if e[0] == chapter_level]
-
-    deeper = [e for e in toc if sub_level and e[0] not in (chapter_level, sub_level)]
-    for lvl, title, page in deeper:
-        ambiguous.append({
-            "reason": "outline entry deeper than 2 levels was folded into its parent subchapter",
-            "title": title,
-            "page": page,
-        })
-
     current_chapter: Optional[Chapter] = None
     chapter_idx = 0
-    for i, (lvl, title, page) in enumerate(entries):
-        next_page = entries[i + 1][2] if i + 1 < len(entries) else total_pages + 1
+    for i, (lvl, title, page) in enumerate(toc):
+        next_page = toc[i + 1][2] if i + 1 < len(toc) else total_pages + 1
         page_end = max(page, next_page - 1)
 
         if lvl == chapter_level:
