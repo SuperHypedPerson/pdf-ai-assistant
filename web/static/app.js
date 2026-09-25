@@ -160,18 +160,23 @@ function renderStructure() {
   el("book-title").textContent = s.title;
   el("book-meta").innerHTML = `${s.total_pages} pages &nbsp;<span class="method-badge">${s.method}</span>`;
 
+  const scannedNotice = el("scanned-notice");
   if (s.scanned_pages && s.scanned_pages.length) {
-    const notice = el("scanned-notice");
-    notice.classList.remove("hidden");
-    notice.textContent = `${s.scanned_pages.length} page(s) had no extractable text and were OCR'd.`;
+    scannedNotice.classList.remove("hidden");
+    scannedNotice.textContent = `${s.scanned_pages.length} page(s) had no extractable text and were OCR'd.`;
+  } else {
+    scannedNotice.classList.add("hidden");
   }
 
+  const ambiguousNotice = el("ambiguous-notice");
   if (s.ambiguous && s.ambiguous.length) {
-    const wrap = el("ambiguous-notice");
-    wrap.classList.remove("hidden");
-    wrap.innerHTML = `<details class="notice warn"><summary>${s.ambiguous.length} item(s) flagged as ambiguous — click to review</summary>
+    ambiguousNotice.classList.remove("hidden");
+    ambiguousNotice.innerHTML = `<details class="notice warn"><summary>${s.ambiguous.length} item(s) flagged as ambiguous — click to review</summary>
       <ul>${s.ambiguous.map(a => `<li>p.${JSON.stringify(a.page)}: ${a.reason}${a.title ? ` (${a.title})` : ""}</li>`).join("")}</ul>
     </details>`;
+  } else {
+    ambiguousNotice.classList.add("hidden");
+    ambiguousNotice.innerHTML = "";
   }
 
   const tree = el("chapter-tree");
@@ -321,6 +326,21 @@ el("back-to-picker").addEventListener("click", () => {
   el("generate-section").classList.add("hidden");
   el("structure-section").classList.remove("hidden");
   el("selection-bar").classList.remove("hidden");
+});
+
+el("back-to-library").addEventListener("click", () => {
+  clearError();
+  state.bookId = null;
+  state.filename = null;
+  state.structure = null;
+  state.processed = new Set();
+  state.selected = new Set();
+  el("structure-section").classList.add("hidden");
+  el("selection-bar").classList.add("hidden");
+  el("generate-section").classList.add("hidden");
+  el("progress-section").classList.add("hidden");
+  el("upload-section").classList.remove("hidden");
+  renderRecentBooks();
 });
 
 // ---------- Generation settings ----------
